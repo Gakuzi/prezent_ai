@@ -120,6 +120,7 @@ const makeGoogleApiCall = async (
         const keyToUpdate = keysWithUpdatedStatus.find(k => k.value === currentKey)!;
         
         try {
+            console.log(`Запрос к Gemini с ключом: ${maskedKey}`);
             onLog({ key: currentKey, status: 'attempting', message: `Вызов API (${maskedKey})...` });
 
             const url = `https://generativelanguage.googleapis.com/v1beta/${endpoint}?key=${currentKey}`;
@@ -255,15 +256,29 @@ export const analyzeNextFrame = async (currentImage: UploadedImage, previousImag
     const previousContext = previousImages.length > 0 ? `Контекст предыдущих кадров:\n${previousImages.map((img, i) => `Кадр ${i + 1}: ${img.description}`).join('\n')}` : 'Это первый кадр для анализа.';
     const locationInfo = currentImage.locationDescription ? `Место съемки: ${currentImage.locationDescription}.` : '';
     const exifInfo = formatExifForPrompt(currentImage.exif);
+    
     const prompt = `
-Ты - ИИ-режиссер... (остальной промпт тот же)
-ДАННЫЕ НОВОГО КАДРА:
+Ты - ИИ-режиссер, твоя задача - проанализировать серию фотографий и создать из них связную историю.
+Сейчас ты работаешь над одним кадром в контексте всей истории.
+    
+КРАТКОЕ ОПИСАНИЕ УЖЕ СЛОЖИВШЕЙСЯ ИСТОРИИ:
+"${currentStorySummary || 'История еще не началась.'}"
+    
+${previousContext}
+    
+ДАННЫЕ НОВОГО КАДРА (КАДР №${previousImages.length + 1}):
 ${locationInfo} ${exifInfo}
-...`;
+Проанализируй приложенное изображение.
+    
+ТВОЯ ЗАДАЧА:
+Верни JSON с двумя полями:
+1.  "imageDescription": Кратко, в ОДНОМ предложении, опиши, что происходит на этом кадре и как он связан с предыдущими. Это описание будет показано пользователю.
+2.  "updatedStory": Основываясь на всей имеющейся информации (старая история + новый кадр), напиши ОБНОВЛЕННУЮ и БОЛЕЕ ДЕТАЛИЗИРОВАННУЮ общую сюжетную линию для всей презентации. Этот текст должен быть связным рассказом на 3-5 предложений.
+`;
     
     const payload = {
-        contents: { parts: [{ text: prompt }, imageToPart(currentImage)] },
-        ...mapAppConfigToRestPayload({
+        contents: [{ parts: [{ text: prompt }, imageToPart(currentImage)] }],
+        generationConfig: {
             responseMimeType: "application/json",
             responseSchema: {
                 type: 'OBJECT',
@@ -273,7 +288,7 @@ ${locationInfo} ${exifInfo}
                 },
                 required: ["imageDescription", "updatedStory"]
             }
-        })
+        }
     };
 
     const response = createTextResponse(await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog));
@@ -289,14 +304,38 @@ ${locationInfo} ${exifInfo}
 
 export const generateStoryboard = async (finalStory: string, images: UploadedImage[], onLog: (log: Omit<ApiCallLog, 'timestamp'>) => void): Promise<AppGenerateContentResponse> => {
     const imageContext = images.map((img, i) => `- ID изображения: ${img.id}, Описание: ${img.description || 'общее фото'}`).join('\n');
-    const prompt = `... (промпт тот же) ...`;
+    const prompt = `Ты — ИИ-режиссер. Твоя задача — создать детальный сценарий для видео-презентации.
+    
+ФИНАЛЬНАЯ ВЕРСИЯ ИСТОРИИ, одобренная пользователем:
+"${finalStory}"
+    
+ДОСТУПНЫЕ ИЗОБРАЖЕНИЯ (кадры):
+${imageContext}
+    
+ИНСТРУКЦИИ:
+1.  Создай массив JSON объектов, где каждый объект — это один слайд.
+2.  Для каждого слайда подбери наиболее подходящее изображение из списка по его ID. **Не придумывай новые ID!**
+3.  Если для какого-то логического шага истории нет подходящего изображения, создай слайд с \`"imageId": null\` и \`"needsImage": true\`.
+4.  Включи в каждый объект слайда следующие поля:
+    *   \`title\` (string): Короткий, емкий заголовок (2-4 слова).
+    *   \`script\` (string): Текст для диктора (2-3 предложения).
+    *   \`imageId\` (string | null): ID изображения из списка выше или null.
+    *   \`speaker\` (number): Номер диктора (0 или 1, чередуй их для диалога).
+    *   \`textOverlay\` (string): (Опционально) Короткая фраза для отображения поверх видео.
+    *   \`podcastScript\` (string): (Опционально) Альтернативный, более разговорный текст для "режима подкаста".
+    *   \`needsImage\` (boolean): \`true\`, если нужно найти или сгенерировать изображение.
+    *   \`suggestions\` (object, опционально): Если \`needsImage\` is \`true\`, предложи варианты:
+        *   \`search\` (string): Поисковый запрос для Pexels.
+        *   \`generate\` (string): Промпт для генерации изображения.
+    
+5.  Твой ответ должен быть ТОЛЬКО валидным JSON-массивом. Без лишних слов и markdown.
+`;
 
     const payload = {
         contents: [{ parts: [{ text: prompt }] }],
-        ...mapAppConfigToRestPayload({
-            responseMimeType: "application/json",
-            responseSchema: { /* ... a large schema definition ... */ }
-        })
+        generationConfig: {
+             responseMimeType: "application/json",
+        }
     };
     const responseData = await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog);
     return createTextResponse(responseData);
@@ -305,7 +344,17 @@ export const generateStoryboard = async (finalStory: string, images: UploadedIma
 export const continueChat = async (messages: ChatMessage[], images: UploadedImage[], slides: Slide[], onLog: (log: Omit<ApiCallLog, 'timestamp'>) => void): Promise<AppGenerateContentResponse> => {
     const history = messages.map(msg => `${msg.role === 'user' ? 'Пользователь' : 'ИИ-Режиссер'}: ${msg.parts[0].text}`).join('\n\n');
     const currentStoryboard = JSON.stringify(slides, null, 2);
-    const prompt = `... (промпт тот же) ...`;
+    const prompt = `Ты — ИИ-режиссер, и ты помогаешь пользователю редактировать сценарий презентации.
+    
+ТЕКУЩИЙ СЦЕНАРИЙ (в формате JSON):
+${currentStoryboard}
+
+ИСТОРИЯ ПЕРЕПИСКИ:
+${history}
+
+ЗАДАЧА:
+Проанализируй последнее сообщение пользователя и ВНЕСИ ИЗМЕНЕНИЯ в JSON-сценарий.
+Твой ответ должен быть ТОЛЬКО обновленным JSON-массивом слайдов. Без комментариев.`;
 
     const payload = {
         contents: [{ parts: [{ text: prompt }] }],
@@ -320,7 +369,9 @@ export const continueChat = async (messages: ChatMessage[], images: UploadedImag
 
 export const suggestMusic = async (concept: string, slides: Slide[], onLog: (log: Omit<ApiCallLog, 'timestamp'>) => void): Promise<AppGenerateContentResponse> => {
     const storySummary = slides.map(s => s.script).join(' ');
-    const prompt = `... (промпт тот же) ...`;
+    const prompt = `Проанализируй концепцию ("${concept}") и краткое содержание ("${storySummary}") презентации.
+Предложи 3-5 настроений для фоновой музыки в виде JSON-массива строк. Например: ["upbeat", "cinematic", "reflective"].
+Ответ должен быть только JSON-массивом.`;
     const payload = {
         contents: [{ parts: [{ text: prompt }] }],
         ...mapAppConfigToRestPayload({ responseMimeType: "application/json" })
@@ -400,7 +451,9 @@ export const checkApiKey = async (key: string): Promise<ApiKey['status']> => {
 };
 
 export const generateSsmlScript = async (script: string, onLog: (log: Omit<ApiCallLog, 'timestamp'>) => void): Promise<AppGenerateContentResponse> => {
-    const prompt = `... (промпт тот же) ...`;
+    const prompt = `Преобразуй следующий текст в формат SSML (Speech Synthesis Markup Language) для более естественного звучания. Используй теги <break time="...s"/> для пауз и <emphasis level="..."> для интонаций. Не оборачивай ответ в \`\`\`xml. Верни только чистый SSML код.
+Исходный текст: "${script}"`;
+
     const payload = {
         contents: [{ parts: [{ text: prompt }] }],
         ...mapAppConfigToRestPayload({
