@@ -3,6 +3,13 @@
 
 
 
+
+
+
+
+
+
+
 // FIX: Added 'ExifData' to the import list from '../types'.
 import { UploadedImage, ChatMessage, Slide, ApiKey, AppSettings, ExifData } from '../types';
 import logger from './logger';
@@ -50,6 +57,7 @@ const createTextResponse = (rawResponse: GeminiApiResponse): AppGenerateContentR
 let keyPool: ApiKey[] = []; // The source of truth for keys, updated from the UI.
 const tokenUsageStats: Record<string, { prompt: number; candidates: number; total: number }> = {};
 const KEY_COOLDOWN_PERIOD = 24 * 60 * 60 * 1000; // 24 hours
+const SHORT_COOLDOWN_PERIOD = 5 * 60 * 1000; // 5 minutes for transient errors
 
 export const initializeApiKeys = (keysFromSettings: ApiKey[]) => {
     const liveKeyMap = new Map(keyPool.map(k => [k.value, k]));
@@ -155,6 +163,7 @@ const makeGoogleApiCall = async (
                 const isQuota = response.status === 429 || status === 'RESOURCE_EXHAUSTED' || lowerMessage.includes('quota');
                 const isInvalid = lowerMessage.includes('api key not valid') || lowerMessage.includes('invalid_api_key') || response.status === 403 || status === 'PERMISSION_DENIED';
                 const isConfigError = response.status === 404 || status === 'NOT_FOUND';
+                const isServerError = response.status >= 500 && response.status < 600;
 
                 const errorMessage = `API Error with ${maskedKey}: ${message}`;
                 const logDetails = { maskedKey, model, endpoint, durationMs, httpStatus: response.status, apiError: { status, message }, apiResponse: data };
@@ -173,8 +182,13 @@ const makeGoogleApiCall = async (
                 } else if (isQuota) {
                     keyToUpdate.status = 'exhausted';
                     keyToUpdate.resetTime = Date.now() + KEY_COOLDOWN_PERIOD;
-                } else {
+                } else if (isServerError) {
+                    keyToUpdate.status = 'rate_limited';
+                    keyToUpdate.resetTime = Date.now() + SHORT_COOLDOWN_PERIOD;
+                }
+                else {
                     keyToUpdate.status = 'unknown';
+                    keyToUpdate.resetTime = undefined;
                 }
                 continue; // Try the next key
             }

@@ -1,5 +1,6 @@
 
 
+
 import React from 'react';
 import { ApiKey } from '../types';
 import { WarningIcon, RefreshIcon, SettingsIcon, ClockIcon, XCircleIcon, CheckCircleIcon, CloseIcon } from './icons';
@@ -59,8 +60,8 @@ const getSmartSummary = (keys: ApiKey[]): { title: string, message: string } => 
 
     if (allKeysOnCooldown) {
         return {
-            title: "Все ключи исчерпаны",
-            message: "Все ключи временно недоступны из-за превышения лимитов. Попробуйте повторить запрос позже."
+            title: "Все ключи временно недоступны",
+            message: "Все ключи на паузе из-за превышения лимитов или временных ошибок API. Попробуйте повторить запрос позже. Статус каждого ключа указан ниже."
         };
     }
 
