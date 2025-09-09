@@ -255,7 +255,14 @@ const App: React.FC = () => {
         console.error("handleError called with:", e);
         
         if (e instanceof gemini.AllKeysFailedError) {
-            setFailedKeys(e.failedKeys); 
+            const updatedKeysFromError = e.failedKeys;
+    
+            // Update the main application state with the corrected key statuses.
+            handleSettingsChange({ ...settings, apiKeys: updatedKeysFromError });
+    
+            // Pass the updated keys to the modal for an accurate report.
+            setFailedKeys(updatedKeysFromError);
+            
             setIsQuotaErrorModalOpen(true);
             setRetryAction(() => onRetry);
             return;
@@ -351,7 +358,7 @@ const App: React.FC = () => {
 
         processAnalysisStep();
 
-    }, [appState, analysisCursor, onApiLog, evolvingStorySummary]);
+    }, [appState, analysisCursor, onApiLog, evolvingStorySummary, handleSettingsChange, settings]);
 
 
     const startAnalysis = async (imagesToAnalyze: UploadedImage[]) => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { ApiKey } from '../types';
 import { WarningIcon, RefreshIcon, SettingsIcon, ClockIcon, XCircleIcon, CheckCircleIcon } from './icons';
 
@@ -12,6 +12,20 @@ interface QuotaErrorModalProps {
 const maskKey = (key: string) => {
     if (key.length < 8) return '****';
     return `...${key.slice(-4)}`;
+};
+
+const formatTimeLeft = (resetTime: number): string => {
+    const timeLeftMs = resetTime - Date.now();
+    if (timeLeftMs <= 0) return '';
+    
+    const totalSeconds = Math.round(timeLeftMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+    if (hours > 0) return `(повтор ~${hours}ч ${minutes}м)`;
+    if (minutes > 0) return `(повтор ~${minutes}м)`;
+    
+    return `(повтор ~${totalSeconds}с)`;
 };
 
 const getStatusInfo = (key: ApiKey) => {
@@ -39,26 +53,20 @@ const getSmartSummary = (keys: ApiKey[]): { title: string, message: string } => 
         };
     }
 
+    const now = Date.now();
+    const allKeysOnCooldown = keys.length > 0 && keys.every(k => (k.resetTime && k.resetTime > now));
+
+    if (allKeysOnCooldown) {
+        return {
+            title: "Все ключи исчерпаны",
+            message: "Все ключи исчерпаны, попробуйте завтра."
+        };
+    }
+
     if (keys.some(k => k.status === 'permission_denied')) {
         return {
             title: "API не активирован",
             message: "Один или несколько ключей не могут быть использованы, так как необходимый сервис не включен в их проекте Google Cloud. Откройте настройки и следуйте инструкции."
-        }
-    }
-    
-    const areAllRateLimited = keys.every(k => k.status === 'rate_limited');
-    if (areAllRateLimited) {
-        return {
-            title: "Высокая частота запросов",
-            message: "Похоже, вы делаете запросы слишком часто. Система автоматически попробует снова через минуту. Вы также можете попробовать вручную."
-        }
-    }
-
-    const areAllExhausted = keys.every(k => k.status === 'exhausted' || k.status === 'rate_limited');
-    if (areAllExhausted) {
-        return {
-            title: "Все ключи достигли лимита",
-            message: "Все доступные ключи исчерпали свой лимит. Пожалуйста, добавьте новые ключи в настройках или подождите, пока лимиты не будут сброшены."
         }
     }
     
@@ -91,13 +99,8 @@ const QuotaErrorModal: React.FC<QuotaErrorModalProps> = ({ isOpen, failedKeys, o
                         <div className="space-y-2">
                             {failedKeys.map((key, index) => {
                                 const statusInfo = getStatusInfo(key);
-                                let countdown = '';
-                                if ((key.status === 'rate_limited' || key.status === 'exhausted') && key.resetTime) {
-                                     const secondsLeft = Math.round((key.resetTime - Date.now()) / 1000);
-                                     if (secondsLeft > 0) {
-                                        countdown = `(повтор через ~${secondsLeft}с)`;
-                                     }
-                                }
+                                const countdown = key.resetTime ? formatTimeLeft(key.resetTime) : '';
+
                                 return (
                                      <div key={index} className="flex items-center gap-3 text-xs p-2 bg-gray-800/50 rounded-md">
                                         {statusInfo.icon}

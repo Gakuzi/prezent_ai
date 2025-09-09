@@ -14,25 +14,44 @@ const maskKey = (key: string) => {
     return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
 };
 
+const formatTimeLeft = (resetTime: number): string => {
+    const timeLeftMs = resetTime - Date.now();
+    if (timeLeftMs <= 0) return '';
+    
+    const totalSeconds = Math.round(timeLeftMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+    if (hours > 0) return `(~${hours}ч ${minutes}м)`;
+    if (minutes > 0) return `(~${minutes}м)`;
+    
+    return `(~${totalSeconds}с)`;
+};
+
 const Countdown: React.FC<{ resetTime: number }> = ({ resetTime }) => {
-    const [timeLeft, setTimeLeft] = useState(Math.round((resetTime - Date.now()) / 1000));
+    const [_, rerender] = useState(0);
 
     useEffect(() => {
+        const timeLeftMs = resetTime - Date.now();
+        if (timeLeftMs <= 0) return;
+
+        const updateInterval = timeLeftMs > 3600 * 1000 ? 60000 : 1000;
+
         const interval = setInterval(() => {
-            const newTimeLeft = Math.round((resetTime - Date.now()) / 1000);
-            if (newTimeLeft > 0) {
-                setTimeLeft(newTimeLeft);
+            if (resetTime - Date.now() > 0) {
+                rerender(c => c + 1);
             } else {
-                setTimeLeft(0);
                 clearInterval(interval);
+                rerender(c => c + 1);
             }
-        }, 1000);
+        }, updateInterval);
         return () => clearInterval(interval);
     }, [resetTime]);
+    
+    const formattedTime = formatTimeLeft(resetTime);
+    if (!formattedTime) return null;
 
-    if (timeLeft <= 0) return null;
-
-    return <span className="text-xs"> (повтор через ~{timeLeft}с)</span>;
+    return <span className="text-xs"> {formattedTime}</span>;
 };
 
 
@@ -90,7 +109,7 @@ const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange }) => 
         const newKey: ApiKey = { value: trimmedKey, status: 'unknown' };
         onKeysChange([...keys, newKey]);
         setNewKeyValue('');
-        // handleCheckKey(trimmedKey); // Removed this line to prevent immediate check
+        handleCheckKey(trimmedKey);
     };
 
     const handleRemoveKey = (keyToRemove: string) => {
@@ -144,7 +163,7 @@ const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange }) => 
         <div className="space-y-6">
             <div>
                 <h3 className="text-lg font-semibold text-white">Управление API ключами</h3>
-                <p className="text-sm text-gray-400 mt-1">Добавьте несколько ключей Google AI. Приоритет использования - сверху вниз.</p>
+                <p className="text-sm text-gray-400 mt-1">Добавьте несколько ключей Google AI из разных проектов Google Cloud. Приоритет использования - сверху вниз.</p>
             </div>
             
             <details className="bg-gray-900/50 p-3 rounded-lg">
@@ -211,7 +230,7 @@ const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange }) => 
                                 <p className="font-mono text-sm text-gray-300">{maskKey(key.value)}</p>
                                 <p className={`text-xs ${isChecking ? 'text-indigo-300' : statusInfo.textColor}`}>
                                     {isChecking ? 'Проверка...' : statusInfo.text}
-                                    {(key.status === 'rate_limited' || key.status === 'exhausted') && key.resetTime && <Countdown resetTime={key.resetTime} />}
+                                    {key.resetTime && <Countdown resetTime={key.resetTime} />}
                                 </p>
                             </div>
                             <div className="flex items-center gap-1">

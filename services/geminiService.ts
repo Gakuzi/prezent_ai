@@ -42,6 +42,7 @@ const createTextResponse = (rawResponse: GeminiApiResponse): AppGenerateContentR
 // --- Module State ---
 let keyPool: ApiKey[] = []; // The source of truth for keys, updated from the UI.
 const tokenUsageStats: Record<string, { prompt: number; candidates: number; total: number }> = {};
+const KEY_COOLDOWN_PERIOD = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Updates the service's internal list of API keys.
@@ -50,12 +51,13 @@ const tokenUsageStats: Record<string, { prompt: number; candidates: number; tota
  */
 export const initializeApiKeys = (keys: ApiKey[]) => {
     keyPool = [...keys];
-    const potentialPoolSize = keyPool.filter(k => 
-        k.status !== 'exhausted' && 
-        k.status !== 'invalid' && 
-        k.status !== 'permission_denied'
-    ).length;
-    console.log(`[Gemini Service] API keys updated. Total keys provided: ${keys.length}. Potential pool size for next call: ${potentialPoolSize}`);
+    const now = Date.now();
+    const potentialPoolSize = keyPool.filter(k => {
+        const isPermanentlyUnusable = k.status === 'invalid' || k.status === 'permission_denied';
+        const isOnCooldown = k.resetTime && k.resetTime > now;
+        return !isPermanentlyUnusable && !isOnCooldown;
+    }).length;
+    console.log(`[Gemini Service] API keys updated. Total keys: ${keys.length}. Available for next call: ${potentialPoolSize}`);
 };
 
 
@@ -78,30 +80,34 @@ const makeGoogleApiCall = async (
     method: 'POST' | 'GET' = 'POST'
 ): Promise<any> => {
     
-    // On each call, determine the order of keys to try from the main pool.
-    const pinnedKey = keyPool.find(k => k.isPinned);
-    const otherKeys = keyPool.filter(k => !k.isPinned);
-    const orderedKeys = pinnedKey ? [pinnedKey, ...otherKeys] : otherKeys;
+    // Create a mutable copy of the key pool to track status updates within this call.
+    const keysWithUpdatedStatus = JSON.parse(JSON.stringify(keyPool)) as ApiKey[];
 
-    // Filter out keys that are known to be unusable for this attempt.
-    const keysToTry = orderedKeys
-      .filter(k => k.status !== 'exhausted' && k.status !== 'invalid' && k.status !== 'permission_denied');
+    const getOrderedKeys = () => {
+        const pinnedKey = keysWithUpdatedStatus.find(k => k.isPinned);
+        const otherKeys = keysWithUpdatedStatus.filter(k => !k.isPinned);
+        return pinnedKey ? [pinnedKey, ...otherKeys] : otherKeys;
+    };
+    
+    const now = Date.now();
+    const keysToTry = getOrderedKeys().filter(k => {
+        const isPermanentlyUnusable = k.status === 'invalid' || k.status === 'permission_denied';
+        const isOnCooldown = k.resetTime && k.resetTime > now;
+        return !isPermanentlyUnusable && !isOnCooldown;
+    });
 
     if (keysToTry.length === 0) {
-        const message = 'Нет доступных для использования API ключей. Проверьте настройки.';
+        const message = 'Нет доступных для использования API ключей. Проверьте настройки или подождите окончания блокировки.';
         onLog({ key: 'system', status: 'failed', message });
         throw new AllKeysFailedError(
-            "Все предоставленные ключи исчерпаны или недействительны. Пожалуйста, проверьте ключи в настройках.",
-            keyPool // Return all keys for the report modal
+            "Все предоставленные ключи исчерпаны, недействительны или временно заблокированы.",
+            keysWithUpdatedStatus // Return the current state of keys
         );
     }
     
-    const failedKeysDuringAttempt: ApiKey[] = [];
-
-    // Loop through the viable keys for this specific call.
     for (const key of keysToTry) {
         const currentKey = key.value;
-        const maskedKey = `...currentKey.slice(-4)`;
+        const maskedKey = `...${currentKey.slice(-4)}`;
         
         try {
             onLog({ key: currentKey, status: 'attempting', message: `Вызов API (${maskedKey})...` });
@@ -113,26 +119,34 @@ const makeGoogleApiCall = async (
             const response = await fetch(url, options);
             const data = await response.json();
 
-            // Check for API-level errors returned in the JSON body
+            const keyToUpdate = keysWithUpdatedStatus.find(k => k.value === currentKey);
+
             if (data.error) {
                 const { message = 'Unknown error', status } = data.error;
                 const lowerMessage = message.toLowerCase();
                 
-                const isFatalKeyError =
-                    status === 'RESOURCE_EXHAUSTED' ||
-                    status === 'PERMISSION_DENIED' ||
-                    lowerMessage.includes('quota') ||
-                    lowerMessage.includes('api key not valid') ||
-                    lowerMessage.includes('api_key_not_valid') ||
-                    lowerMessage.includes('permission denied') ||
-                    response.status === 403 ||
-                    response.status === 429;
-                
+                let newStatus: ApiKey['status'] | null = null;
+                let needsCooldown = false;
+
+                const isQuota = status === 'RESOURCE_EXHAUSTED' || lowerMessage.includes('quota');
+                const isRateLimit = response.status === 429;
+                const isPermission = status === 'PERMISSION_DENIED' || lowerMessage.includes('permission denied') || response.status === 403;
+                const isInvalid = lowerMessage.includes('api key not valid') || lowerMessage.includes('api_key_not_valid') || response.status === 400;
+
+                if (isQuota) { newStatus = 'exhausted'; needsCooldown = true; }
+                else if (isRateLimit) { newStatus = 'rate_limited'; needsCooldown = true; }
+                else if (isPermission) { newStatus = 'permission_denied'; needsCooldown = true; } // Per user request
+                else if (isInvalid) { newStatus = 'invalid'; needsCooldown = true; } // Per user request
+
                 onLog({ key: currentKey, status: 'failed', message: `Ошибка API: ${message} (Статус: ${status || response.status})` });
 
-                if (isFatalKeyError) {
-                    failedKeysDuringAttempt.push({ ...key, status: 'exhausted', lastError: message });
-                    continue; // Try the next key in the loop
+                if (newStatus && keyToUpdate) {
+                    keyToUpdate.status = newStatus;
+                    keyToUpdate.lastError = message;
+                    if (needsCooldown) {
+                        keyToUpdate.resetTime = Date.now() + KEY_COOLDOWN_PERIOD;
+                    }
+                    continue; // Try the next key
                 } else {
                     // For other, potentially transient errors, fail the whole operation.
                     throw new Error(`API Error (${status}): ${message}`);
@@ -142,6 +156,12 @@ const makeGoogleApiCall = async (
             // --- Success case ---
             onLog({ key: currentKey, status: 'success', message: `Вызов API успешен.` });
             
+            if (keyToUpdate) {
+                keyToUpdate.status = 'active';
+                keyToUpdate.lastError = undefined;
+                keyToUpdate.resetTime = undefined;
+            }
+            
             if (data.usageMetadata) {
                 const { promptTokenCount = 0, candidatesTokenCount = 0, totalTokenCount = 0 } = data.usageMetadata;
                 if (!tokenUsageStats[maskedKey]) tokenUsageStats[maskedKey] = { prompt: 0, candidates: 0, total: 0 };
@@ -150,7 +170,7 @@ const makeGoogleApiCall = async (
                 tokenUsageStats[maskedKey].total += totalTokenCount;
 
                 console.log(`[API Call OK for ${maskedKey}]:`, {
-                    promptTokens: promptTokenCount,
+                    promptTokens: promptTokenCount, candidatesTokens: candidatesTokenCount, totalTokens: totalTokenCount,
                     sessionTotal: tokenUsageStats[maskedKey]
                 });
             }
@@ -170,7 +190,7 @@ const makeGoogleApiCall = async (
     // This point is reached only if the loop finishes, meaning all keys failed.
     const finalMessage = "Все доступные API ключи не смогли выполнить запрос.";
     onLog({ key: 'system', status: 'failed', message: finalMessage });
-    throw new AllKeysFailedError(finalMessage, keyPool);
+    throw new AllKeysFailedError(finalMessage, keysWithUpdatedStatus);
 };
 
 
