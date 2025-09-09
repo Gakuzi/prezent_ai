@@ -53,9 +53,9 @@ export const initializeApiKeys = (keys: ApiKey[]) => {
     keyPool = [...keys];
     const now = Date.now();
     const potentialPoolSize = keyPool.filter(k => {
-        const isPermanentlyUnusable = k.status === 'invalid' || k.status === 'permission_denied';
+        const isInvalid = k.status === 'invalid';
         const isOnCooldown = k.resetTime && k.resetTime > now;
-        return !isPermanentlyUnusable && !isOnCooldown;
+        return !isInvalid && !isOnCooldown;
     }).length;
     console.log(`[Gemini Service] API keys updated. Total keys: ${keys.length}. Available for next call: ${potentialPoolSize}`);
 };
@@ -90,24 +90,34 @@ const makeGoogleApiCall = async (
     };
     
     const now = Date.now();
-    const keysToTry = getOrderedKeys().filter(k => {
-        const isPermanentlyUnusable = k.status === 'invalid' || k.status === 'permission_denied';
-        const isOnCooldown = k.resetTime && k.resetTime > now;
-        return !isPermanentlyUnusable && !isOnCooldown;
-    });
+    const allKeysInOrder = getOrderedKeys();
 
-    if (keysToTry.length === 0) {
-        const message = 'Нет доступных для использования API ключей. Проверьте настройки или подождите окончания блокировки.';
+    const keysAvailableAtStart = allKeysInOrder.filter(k => {
+        const isInvalid = k.status === 'invalid';
+        const isOnCooldown = k.resetTime && k.resetTime > now;
+        return !isInvalid && !isOnCooldown;
+    });
+    
+    if (keysAvailableAtStart.length === 0 && allKeysInOrder.length > 0) {
+        const message = 'Нет доступных для использования API ключей. Все ключи временно заблокированы или недействительны.';
         onLog({ key: 'system', status: 'failed', message });
-        throw new AllKeysFailedError(
-            "Все предоставленные ключи исчерпаны, недействительны или временно заблокированы.",
-            keysWithUpdatedStatus // Return the current state of keys
-        );
+        throw new AllKeysFailedError(message, keysWithUpdatedStatus);
     }
     
-    for (const key of keysToTry) {
-        const currentKey = key.value;
+    for (const keyState of allKeysInOrder) {
+        // Skip keys that are permanently invalid for this session
+        if (keyState.status === 'invalid') {
+            continue;
+        }
+        // Skip keys that are currently on cooldown
+        if (keyState.resetTime && keyState.resetTime > now) {
+            continue;
+        }
+
+        const currentKey = keyState.value;
         const maskedKey = `...${currentKey.slice(-4)}`;
+        // Find the key in our mutable copy to update its status during this operation
+        const keyToUpdate = keysWithUpdatedStatus.find(k => k.value === currentKey)!;
         
         try {
             onLog({ key: currentKey, status: 'attempting', message: `Вызов API (${maskedKey})...` });
@@ -119,48 +129,40 @@ const makeGoogleApiCall = async (
             const response = await fetch(url, options);
             const data = await response.json();
 
-            const keyToUpdate = keysWithUpdatedStatus.find(k => k.value === currentKey);
-
-            if (data.error) {
-                const { message = 'Unknown error', status } = data.error;
-                const lowerMessage = message.toLowerCase();
+            if (data.error || !response.ok) {
+                const { message = 'Unknown error', status } = data.error || {};
+                const lowerMessage = (message as string).toLowerCase();
                 
-                let newStatus: ApiKey['status'] | null = null;
-                let needsCooldown = false;
+                const isQuota = response.status === 429 || status === 'RESOURCE_EXHAUSTED' || lowerMessage.includes('quota');
+                const isPermission = response.status === 403 || status === 'PERMISSION_DENIED';
+                const isInvalid = lowerMessage.includes('api key not valid') || lowerMessage.includes('invalid_api_key');
+                
+                const errorMessage = `Ошибка API: ${message} (Статус: ${status || response.status})`;
+                onLog({ key: currentKey, status: 'failed', message: errorMessage });
 
-                const isQuota = status === 'RESOURCE_EXHAUSTED' || lowerMessage.includes('quota');
-                const isRateLimit = response.status === 429;
-                const isPermission = status === 'PERMISSION_DENIED' || lowerMessage.includes('permission denied') || response.status === 403;
-                const isInvalid = lowerMessage.includes('api key not valid') || lowerMessage.includes('api_key_not_valid') || response.status === 400;
+                keyToUpdate.lastError = message;
 
-                if (isQuota) { newStatus = 'exhausted'; needsCooldown = true; }
-                else if (isRateLimit) { newStatus = 'rate_limited'; needsCooldown = true; }
-                else if (isPermission) { newStatus = 'permission_denied'; needsCooldown = true; } // Per user request
-                else if (isInvalid) { newStatus = 'invalid'; needsCooldown = true; } // Per user request
-
-                onLog({ key: currentKey, status: 'failed', message: `Ошибка API: ${message} (Статус: ${status || response.status})` });
-
-                if (newStatus && keyToUpdate) {
-                    keyToUpdate.status = newStatus;
-                    keyToUpdate.lastError = message;
-                    if (needsCooldown) {
-                        keyToUpdate.resetTime = Date.now() + KEY_COOLDOWN_PERIOD;
-                    }
-                    continue; // Try the next key
+                if (isInvalid) {
+                    keyToUpdate.status = 'invalid';
+                    keyToUpdate.resetTime = undefined; // Permanently invalid for this session
+                } else if (isQuota) {
+                    keyToUpdate.status = 'exhausted';
+                    keyToUpdate.resetTime = Date.now() + KEY_COOLDOWN_PERIOD;
+                } else if (isPermission) {
+                    keyToUpdate.status = 'permission_denied';
+                    keyToUpdate.resetTime = Date.now() + KEY_COOLDOWN_PERIOD;
                 } else {
-                    // For other, potentially transient errors, fail the whole operation.
-                    throw new Error(`API Error (${status}): ${message}`);
+                    keyToUpdate.status = 'unknown'; // A non-blocking, possibly transient error occurred
                 }
+                continue; // Try the next key
             }
             
             // --- Success case ---
             onLog({ key: currentKey, status: 'success', message: `Вызов API успешен.` });
             
-            if (keyToUpdate) {
-                keyToUpdate.status = 'active';
-                keyToUpdate.lastError = undefined;
-                keyToUpdate.resetTime = undefined;
-            }
+            keyToUpdate.status = 'active';
+            keyToUpdate.lastError = undefined;
+            keyToUpdate.resetTime = undefined;
             
             if (data.usageMetadata) {
                 const { promptTokenCount = 0, candidatesTokenCount = 0, totalTokenCount = 0 } = data.usageMetadata;
@@ -182,13 +184,14 @@ const makeGoogleApiCall = async (
             // Handle network errors (e.g., CORS, DNS, offline)
             const errorMessage = error.message || 'Network request failed';
             onLog({ key: currentKey, status: 'failed', message: `Сетевая ошибка: ${errorMessage}` });
-            console.error(`[Gemini Service] Network error for key ${maskedKey}:`, error);
-            throw new Error(`Сетевая ошибка: ${errorMessage}`);
+            keyToUpdate.status = 'unknown';
+            keyToUpdate.lastError = errorMessage;
+            continue; // Try the next key on network error
         }
     }
 
-    // This point is reached only if the loop finishes, meaning all keys failed.
-    const finalMessage = "Все доступные API ключи не смогли выполнить запрос.";
+    // This point is reached only if the loop finishes, meaning all available keys failed.
+    const finalMessage = "Все предоставленные ключи исчерпаны, недействительны или временно заблокированы.";
     onLog({ key: 'system', status: 'failed', message: finalMessage });
     throw new AllKeysFailedError(finalMessage, keysWithUpdatedStatus);
 };
@@ -232,7 +235,7 @@ export const createInitialPlan = async (topic: string, onLog: (log: Omit<ApiCall
             systemInstruction: "Ты — креативный и полезный ассистент, режиссер, который всегда отвечает на русском языке и помогает создавать великолепные презентации."
         })
     };
-    const responseData = await makeGoogleApiCall('models/gemini-2.5-flash:generateContent', payload, onLog);
+    const responseData = await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog);
     return createTextResponse(responseData);
 };
 
@@ -273,7 +276,7 @@ ${locationInfo} ${exifInfo}
         })
     };
 
-    const response = createTextResponse(await makeGoogleApiCall('models/gemini-2.5-flash:generateContent', payload, onLog));
+    const response = createTextResponse(await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog));
     try {
         const result = JSON.parse(response.text.trim());
         if (result.imageDescription && result.updatedStory) return result;
@@ -295,7 +298,7 @@ export const generateStoryboard = async (finalStory: string, images: UploadedIma
             responseSchema: { /* ... a large schema definition ... */ }
         })
     };
-    const responseData = await makeGoogleApiCall('models/gemini-2.5-flash:generateContent', payload, onLog);
+    const responseData = await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog);
     return createTextResponse(responseData);
 };
 
@@ -311,7 +314,7 @@ export const continueChat = async (messages: ChatMessage[], images: UploadedImag
             responseMimeType: "application/json"
         })
     };
-    const responseData = await makeGoogleApiCall('models/gemini-2.5-flash:generateContent', payload, onLog);
+    const responseData = await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog);
     return createTextResponse(responseData);
 };
 
@@ -322,7 +325,7 @@ export const suggestMusic = async (concept: string, slides: Slide[], onLog: (log
         contents: [{ parts: [{ text: prompt }] }],
         ...mapAppConfigToRestPayload({ responseMimeType: "application/json" })
     };
-    const responseData = await makeGoogleApiCall('models/gemini-2.5-flash:generateContent', payload, onLog);
+    const responseData = await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog);
     return createTextResponse(responseData);
 };
 
@@ -353,13 +356,13 @@ export const checkVideoStatus = (operation: any, onLog: (log: Omit<ApiCallLog, '
 };
 
 /**
- * Checks the status of a single API key by making a lightweight request.
+ * Checks the status of a single API key by making a lightweight, real request.
  * @param key The API key to check.
  * @returns A promise that resolves to the key's status.
  */
 export const checkApiKey = async (key: string): Promise<ApiKey['status']> => {
     try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:countTokens?key=${key}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`;
         const payload = { contents: [{ parts: [{ text: "health check" }] }] };
         const response = await fetch(url, {
             method: 'POST',
@@ -375,13 +378,18 @@ export const checkApiKey = async (key: string): Promise<ApiKey['status']> => {
             const { message = '', status } = data.error;
             const lowerMessage = message.toLowerCase();
             
-            if (status === 'RESOURCE_EXHAUSTED' || lowerMessage.includes('quota')) return 'exhausted';
-            if (status === 'PERMISSION_DENIED' || lowerMessage.includes('permission denied')) return 'permission_denied';
-            if (lowerMessage.includes('api key not valid') || lowerMessage.includes('api_key_not_valid') || response.status === 400) return 'invalid';
-            return 'invalid';
+            const isQuota = status === 'RESOURCE_EXHAUSTED' || lowerMessage.includes('quota');
+            const isPermission = status === 'PERMISSION_DENIED' || lowerMessage.includes('permission denied');
+            const isInvalid = lowerMessage.includes('api key not valid') || lowerMessage.includes('invalid_api_key') || response.status === 400;
+
+            if (isQuota) return 'exhausted';
+            if (isPermission) return 'permission_denied';
+            if (isInvalid) return 'invalid';
+            
+            return 'invalid'; // Default to invalid for any other error
         }
 
-        if (response.ok && typeof data.totalTokens === 'number') return 'active';
+        if (response.ok && data.candidates) return 'active';
         
         return 'unknown';
 
@@ -400,15 +408,16 @@ export const generateSsmlScript = async (script: string, onLog: (log: Omit<ApiCa
             thinkingConfig: { thinkingBudget: 0 }
         })
     };
-    const responseData = await makeGoogleApiCall('models/gemini-2.5-flash:generateContent', payload, onLog);
+    const responseData = await makeGoogleApiCall('models/gemini-1.5-flash:generateContent', payload, onLog);
     return createTextResponse(responseData);
 };
 
 export const getCurrentApiKey = (): string | null => {
+    const now = Date.now();
     const pinnedKey = keyPool.find(k => k.isPinned);
-    if (pinnedKey && (pinnedKey.status === 'active' || pinnedKey.status === 'unknown')) {
+    if (pinnedKey && (!pinnedKey.resetTime || pinnedKey.resetTime <= now) && pinnedKey.status !== 'invalid') {
         return pinnedKey.value;
     }
-    const firstAvailable = keyPool.find(k => k.status === 'active' || k.status === 'unknown');
+    const firstAvailable = keyPool.find(k => k.status !== 'invalid' && (!k.resetTime || k.resetTime <= now));
     return firstAvailable ? firstAvailable.value : null;
 };

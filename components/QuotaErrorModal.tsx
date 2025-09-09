@@ -1,12 +1,14 @@
+
 import React from 'react';
 import { ApiKey } from '../types';
-import { WarningIcon, RefreshIcon, SettingsIcon, ClockIcon, XCircleIcon, CheckCircleIcon } from './icons';
+import { WarningIcon, RefreshIcon, SettingsIcon, ClockIcon, XCircleIcon, CheckCircleIcon, CloseIcon } from './icons';
 
 interface QuotaErrorModalProps {
   isOpen: boolean;
   failedKeys: ApiKey[];
   onRetry: () => void;
   onOpenSettings: () => void;
+  onClose: () => void;
 }
 
 const maskKey = (key: string) => {
@@ -77,7 +79,7 @@ const getSmartSummary = (keys: ApiKey[]): { title: string, message: string } => 
 };
 
 
-const QuotaErrorModal: React.FC<QuotaErrorModalProps> = ({ isOpen, failedKeys, onRetry, onOpenSettings }) => {
+const QuotaErrorModal: React.FC<QuotaErrorModalProps> = ({ isOpen, failedKeys, onRetry, onOpenSettings, onClose }) => {
     if (!isOpen) return null;
     
     const summary = getSmartSummary(failedKeys);
@@ -126,6 +128,15 @@ const QuotaErrorModal: React.FC<QuotaErrorModalProps> = ({ isOpen, failedKeys, o
                         >
                             <SettingsIcon className="w-5 h-5" />
                             Настройки
+                        </button>
+                    </div>
+
+                    <div className="mt-4 text-center">
+                        <button
+                            onClick={onClose}
+                            className="text-sm text-gray-400 hover:text-white hover:underline"
+                        >
+                            Отмена
                         </button>
                     </div>
                 </div>

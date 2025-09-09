@@ -130,8 +130,7 @@ const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images,
     } else if (!isPlaying) {
       speechSynthesis.cancel();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSlideIndex, isPlaying, voiceSettings.isPodcastMode]);
+  }, [currentSlide, isPlaying, isPreparingSpeech, voiceSettings.isPodcastMode, speak]);
 
 
   useEffect(() => {

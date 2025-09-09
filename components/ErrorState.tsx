@@ -4,7 +4,8 @@ import Loader from './Loader';
 
 interface ErrorStateProps {
   error: string | null;
-  onRetry: () => Promise<void>;
+  // FIX: Allow onRetry to return void or a Promise to match the type of retryAction in App.tsx.
+  onRetry: () => Promise<void> | void;
   onOpenSettings: () => void;
   onRestart: () => void;
 }

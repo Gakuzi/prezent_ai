@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UploadedImage, ChatMessage, Slide, AnalysisProgress, ExportFormat, VoiceSettings, ApiKey, GithubUser, ApiCallLog, AppSettings, SyncStatus } from './types';
 import * as gemini from './services/geminiService';
@@ -51,13 +52,14 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const App: React.FC = () => {
     const [initState, setInitState] = useState<InitState>('initializing');
+    const [showSplash, setShowSplash] = useState(true);
     const [appState, setAppState] = useState<AppState>('concept');
     const [error, setError] = useState<string | null>(null);
     const [isApiKeyMissing, setIsApiKeyMissing] = useState(false);
     const [isQuotaErrorModalOpen, setIsQuotaErrorModalOpen] = useState(false);
     const [failedKeys, setFailedKeys] = useState<ApiKey[]>([]);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-    const [retryAction, setRetryAction] = useState<(() => Promise<void>) | null>(null);
+    const [retryAction, setRetryAction] = useState<(() => Promise<void> | void) | null>(null);
     
     const [presentationConcept, setPresentationConcept] = useState<string>('');
     const [initialStoryPlan, setInitialStoryPlan] = useState<string>('');
@@ -90,14 +92,12 @@ const App: React.FC = () => {
     const [videoProgress, setVideoProgress] = useState({ message: '', url: null as string | null, error: null as string | null });
     const [musicSuggestions, setMusicSuggestions] = useState<string[]>([]);
 
-    // --- Centralized Settings State ---
     const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
     const settingsRef = useRef(settings);
     useEffect(() => {
         settingsRef.current = settings;
     }, [settings]);
 
-    // --- GitHub Sync State ---
     const [authState, setAuthState] = useState<AuthState>(null);
     const [githubPat, setGithubPat] = useState<string | null>(null);
     const [githubUser, setGithubUser] = useState<GithubUser | null>(null);
@@ -131,25 +131,30 @@ const App: React.FC = () => {
         return localSettings;
     }, []);
 
+    const handleSettingsChange = useCallback((newSettings: AppSettings) => {
+        setSettings(newSettings);
+    }, []);
+    
+    useEffect(() => {
+        try {
+            localStorage.setItem('apiKeys', JSON.stringify(settings.apiKeys));
+            localStorage.setItem('voiceSettings', JSON.stringify(settings.voiceSettings));
+            localStorage.setItem('pexelsApiKey', settings.pexelsApiKey || '');
+        } catch (e) {
+            console.error("Failed to save settings to localStorage:", e);
+        }
+    }, [settings]);
+
     const handleLogout = useCallback(() => {
         localStorage.removeItem('githubPat');
         setGithubPat(null);
         setGithubUser(null);
         setGistId(null);
         setAuthState('unauthenticated');
+        setShowSplash(true); 
         setSettings(loadLocalSettings());
     }, [loadLocalSettings]);
     
-    const handleSettingsChange = useCallback((newSettings: AppSettings) => {
-        setSettings(newSettings);
-        
-        localStorage.setItem('apiKeys', JSON.stringify(newSettings.apiKeys));
-        localStorage.setItem('voiceSettings', JSON.stringify(newSettings.voiceSettings));
-        localStorage.setItem('pexelsApiKey', newSettings.pexelsApiKey || '');
-
-    }, []);
-
-    // Startup logic for authentication and settings loading
     useEffect(() => {
         const startup = async () => {
             const pat = localStorage.getItem('githubPat');
@@ -167,15 +172,17 @@ const App: React.FC = () => {
                         setSyncStatus('success');
                     } else {
                         setSettings(loadLocalSettings());
-                        setSyncStatus('idle'); // No gist found, idle until first save
+                        setSyncStatus('idle');
                     }
                     setAuthState('authenticated');
+                    setShowSplash(false); 
                 } catch (e) {
                     console.error("GitHub auth/fetch error. Using local settings.", e);
                     if (e instanceof github.GitHubAuthError) {
                         handleLogout();
                     } else {
                         setAuthState('authenticated');
+                        setShowSplash(false);
                         setSettings(loadLocalSettings());
                         setSyncStatus('error');
                     }
@@ -184,11 +191,11 @@ const App: React.FC = () => {
                 setSettings(loadLocalSettings());
                 setAuthState('unauthenticated');
             }
+            setInitState('ready');
         };
         startup();
     }, [loadLocalSettings, handleLogout]);
     
-    // Auto-sync settings to GitHub on change
     useEffect(() => {
         if (isInitialMount.current || authState !== 'authenticated' || !githubPat) {
             isInitialMount.current = false;
@@ -207,14 +214,12 @@ const App: React.FC = () => {
                 console.error("Auto-sync failed:", e);
                 setSyncStatus('error');
             }
-        }, 2000); // 2-second debounce
+        }, 2000);
 
         return () => { if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current); };
     }, [settings, githubPat, gistId, authState]);
 
-    // Effect to update services when settings change
     useEffect(() => {
-        // Crucial: Sync API keys from UI state to the Gemini service.
         gemini.initializeApiKeys(settings.apiKeys);
         imageSearchService.initializePexels(settings.pexelsApiKey);
         
@@ -251,529 +256,360 @@ const App: React.FC = () => {
         setApiCallLogs(prev => [...prev.slice(-20), { ...log, timestamp: Date.now() }]);
     }, []);
 
-    const handleError = (e: any, onRetry: (() => Promise<void>) | null = null) => {
+    const handleError = (e: any, onRetry: (() => Promise<void> | void) | null = null) => {
         console.error("handleError called with:", e);
         
         if (e instanceof gemini.AllKeysFailedError) {
             const updatedKeysFromError = e.failedKeys;
     
-            // Update the main application state with the corrected key statuses.
-            handleSettingsChange({ ...settings, apiKeys: updatedKeysFromError });
-    
-            // Pass the updated keys to the modal for an accurate report.
-            setFailedKeys(updatedKeysFromError);
+            handleSettingsChange({
+                ...settingsRef.current,
+                apiKeys: updatedKeysFromError
+            });
             
+            setFailedKeys(updatedKeysFromError);
             setIsQuotaErrorModalOpen(true);
-            setRetryAction(() => onRetry);
+            if (onRetry) setRetryAction(() => onRetry);
             return;
         }
-
-        let errorMessage = e.message || 'Произошла неизвестная ошибка.';
-        if (typeof errorMessage === 'string') {
-            const lowerCaseError = errorMessage.toLowerCase();
-            if (lowerCaseError.includes('network request failed') || lowerCaseError.includes('fetch') || lowerCaseError.includes('сеть')) {
-                errorMessage += '\n\n💡 Совет: Не удалось подключиться к серверам ИИ. Проверьте ваше интернет-соединение.';
-            }
-        }
         
-        setRetryAction(() => onRetry);
-        setError(errorMessage);
+        const message = e instanceof Error ? e.message : String(e);
+        setError(message);
         setAppState('error');
-    };
-    
-    useEffect(() => {
-        if (appState !== 'analyzing' || analysisCursor.status !== 'running') {
-            return;
-        }
-
-        const processAnalysisStep = async () => {
-            const { imagesToAnalyze, currentIndex } = analysisCursor;
-
-            if (currentIndex < imagesToAnalyze.length) {
-                const image = imagesToAnalyze[currentIndex];
-                setAnalysisProgress({
-                    currentIndex: currentIndex + 1,
-                    total: imagesToAnalyze.length,
-                    currentAction: `Анализ кадра ${currentIndex + 1} из ${imagesToAnalyze.length}`,
-                    matrixText: '',
-                });
-
-                try {
-                    const previousImages = allUploadedImagesRef.current
-                        .filter(img => imagesToAnalyze.slice(0, currentIndex).some(prevImg => prevImg.id === img.id));
-                    
-                    const response = await gemini.analyzeNextFrame(image, previousImages, evolvingStorySummary, onApiLog);
-                    
-                    setAllUploadedImages(prev =>
-                        prev.map(img => img.id === image.id ? { ...img, description: response.imageDescription } : img)
-                    );
-                    setEvolvingStorySummary(response.updatedStory);
-
-                    setAnalysisCursor(c => ({ ...c, currentIndex: c.currentIndex + 1 }));
-                } catch (e) {
-                    setAnalysisCursor(c => ({ ...c, status: 'paused' }));
-                    const retryCurrentStep = () => {
-                        setError(null);
-                        setIsQuotaErrorModalOpen(false);
-                        setAppState('analyzing');
-                        setAnalysisCursor(c => ({ ...c, status: 'running' }));
-                        return Promise.resolve();
-                    };
-                    handleError(e, retryCurrentStep);
-                }
-                return;
-            }
-
-            if (currentIndex === imagesToAnalyze.length) {
-                setAnalysisCursor(c => ({ ...c, status: 'done' }));
-                setAnalysisProgress(p => ({ ...p, isSynthesizing: true }));
-                
-                try {
-                    const finalStory = evolvingStorySummary;
-                    const response = await gemini.generateStoryboard(finalStory, imagesToAnalyze, onApiLog);
-                    const parsedSlides = parseSlidesFromJson(response.text);
-                    setSlides(parsedSlides);
-                    
-                    const systemMessage = "Вот первоначальный план вашей презентации. Вы можете попросить меня внести любые изменения: поменять порядок, переписать текст, добавить или удалить слайды. Когда все будет готово, нажмите 'Создать презентацию'.";
-                    setChatMessages([{ role: 'system', parts: [{ text: systemMessage }] }]);
-
-                    setAppState('chat');
-                    setAnalysisCursor({ imagesToAnalyze: [], currentIndex: 0, status: 'idle' });
-                } catch (e) {
-                    const retryStoryboardGeneration = async () => {
-                         setError(null);
-                         setIsQuotaErrorModalOpen(false);
-                         setAppState('analyzing');
-                         setAnalysisProgress(p => ({ ...p, isSynthesizing: true }));
-                         setAnalysisCursor({
-                            imagesToAnalyze: imagesToAnalyze,
-                            currentIndex: imagesToAnalyze.length,
-                            status: 'running'
-                         });
-                    };
-                    handleError(e, retryStoryboardGeneration);
-                }
-            }
-        };
-
-        processAnalysisStep();
-
-    }, [appState, analysisCursor, onApiLog, evolvingStorySummary, handleSettingsChange, settings]);
-
-
-    const startAnalysis = async (imagesToAnalyze: UploadedImage[]) => {
-        setAppState('analyzing');
-        setError(null);
-        setIsQuotaErrorModalOpen(false);
-        setApiCallLogs([]);
-        setChatMessages([]);
-        setEvolvingStorySummary(initialStoryPlan);
-        setSlides([]);
-        
-        const imageIdsToAnalyze = new Set(imagesToAnalyze.map(i => i.id));
-        setAllUploadedImages(prev => prev.map(img => 
-            imageIdsToAnalyze.has(img.id) ? { ...img, description: undefined } : img
-        ));
-
-        setAnalysisCursor({
-            imagesToAnalyze: imagesToAnalyze,
-            currentIndex: 0,
-            status: 'running',
-        });
-    };
-    
-    const handleRestart = () => {
-        setAppState('concept');
-        setError(null);
-        setIsQuotaErrorModalOpen(false);
-        setAllUploadedImages([]);
-        setChatMessages([]);
-        setSlides([]);
-        setIsTyping(false);
-        setApiCallLogs([]);
-        setRetryAction(null);
-        setAnalysisCursor({ imagesToAnalyze: [], currentIndex: 0, status: 'idle' });
-        setEvolvingStorySummary('');
-        setPresentationConcept('');
-        setInitialStoryPlan('');
+        if (onRetry) setRetryAction(() => onRetry);
     };
 
-    const enrichImagesWithLocationInBackground = async (images: UploadedImage[]) => {
-        for (const image of images) {
-            if (image.exif?.latitude && image.exif?.longitude) {
-                try {
-                    await new Promise(resolve => setTimeout(resolve, 1100));
-                    const locationDescription = await location.findLocationDetails(image.exif.latitude, image.exif.longitude);
-                    if (locationDescription) {
-                        setAllUploadedImages(prevImages =>
-                            prevImages.map(img =>
-                                img.id === image.id ? { ...img, locationDescription } : img
-                            )
-                        );
-                    }
-                } catch (err) {
-                    console.error(`Failed to get location details for image ${image.id}:`, err);
-                }
-            }
-        }
-    };
-    
-    const handleConceptSubmit = async (concept: string) => {
-        setPresentationConcept(concept);
-        setAppState('generating_plan');
-        setError(null);
-        setIsQuotaErrorModalOpen(false);
-        setApiCallLogs([]);
-
-        const submitAction = async () => {
-            try {
-                const response = await gemini.createInitialPlan(concept, onApiLog);
-                setInitialStoryPlan(response.text);
-                setAppState('upload');
-            } catch (e) {
-                setAppState('concept');
-                handleError(e, submitAction);
-            }
-        };
-
-        await submitAction();
-    };
-
-    const handleImagesUpload = async (images: UploadedImage[]) => {
-        if (images.length === 0) return;
-        
-        setAllUploadedImages(images);
-        setAppState('analyzing');
-    
-        enrichImagesWithLocationInBackground(images);
-        
-        startAnalysis(images);
-    };
-
-    const handleSendMessage = async (text: string) => {
-        const newMessages: ChatMessage[] = [...chatMessages, { role: 'user', parts: [{ text }] }];
-        setChatMessages(newMessages);
-        setIsTyping(true);
-        setApiCallLogs([]);
-        
-        const sendMessageAction = async () => {
-            try {
-                const response = await gemini.continueChat(newMessages, allUploadedImages, slides, onApiLog);
-                
-                const responseText = response.text;
-                
-                const updatedSlides = parseSlidesFromJson(responseText);
-                setSlides(updatedSlides);
-                
-                const systemMessage = "Я обновил структуру презентации согласно вашим пожеланиям. Что-нибудь еще?";
-                setChatMessages(prev => [...prev, { role: 'model', parts: [{ text: systemMessage }] }]);
-
-                setAppState('chat'); 
-            } catch(e) {
-                handleError(e, sendMessageAction);
-            } finally {
-                setIsTyping(false);
-            }
-        };
-
-        await sendMessageAction();
-    };
-    
-    const handleFinalizeScript = async () => {
-        setIsTyping(true);
-        try {
-            const response = await gemini.suggestMusic(presentationConcept, slides, onApiLog);
-            const suggestions = JSON.parse(response.text);
-            setMusicSuggestions(suggestions);
-        } catch(e) {
-            console.error("Failed to get music suggestions:", e);
-            setMusicSuggestions([]);
-        } finally {
-            setIsTyping(false);
-            setAppState('presentation');
-        }
-    };
-    
-    const handleExport = async (format: ExportFormat) => {
-        if (isExporting) return;
-        
-        if (format === 'video') {
-            setIsVideoModalOpen(true);
-            return;
-        }
-        setIsExporting(true);
-        try {
-            if (format === 'pdf') {
-                await exportToPdf(slides, allUploadedImages);
-            } else if (format === 'pptx') {
-                await exportToPptx(slides, allUploadedImages, settings.voiceSettings.isPodcastMode);
-            } else if (format === 'html') {
-                await exportToHtml(slides, allUploadedImages, settings.voiceSettings);
-            } else if (format === 'gsheets') {
-                alert("Экспорт в Google Slides — сложная функция, запланированная для будущих обновлений.");
-            } else if (format === 'link') {
-                alert("Создание публичных ссылок требует серверной инфраструктуры и будет рассмотрено в будущих версиях.");
-            }
-        } catch (e) {
-            console.error("Export failed:", e);
-            alert("Не удалось экспортировать презентацию.");
-        } finally {
-            setIsExporting(false);
-        }
-    };
-
-    const handleLogin = async (pat: string): Promise<boolean> => {
+    const handleLogin = useCallback(async (pat: string): Promise<boolean> => {
         try {
             const user = await github.getUser(pat);
             localStorage.setItem('githubPat', pat);
             setGithubPat(pat);
             setGithubUser(user);
-            
+
+            setSyncStatus('syncing');
             const result = await github.getSettingsFromGist(pat);
             if (result) {
-                handleSettingsChange(result.settings);
+                setSettings(result.settings);
                 setGistId(result.gistId);
+                setSyncStatus('success');
             } else {
                 const localSettings = loadLocalSettings();
-                handleSettingsChange(localSettings);
-                const newGistId = await github.saveSettings(pat, localSettings, null);
-                setGistId(newGistId);
+                setSettings(localSettings);
+                setSyncStatus('idle'); 
             }
 
             setAuthState('authenticated');
+            setShowSplash(false);
             return true;
-        } catch (err: any) {
-            console.error("GitHub auth error:", err);
-            alert(`Не удалось войти: ${err.message}`);
+        } catch (e) {
+            console.error("Login attempt failed:", e);
+            localStorage.removeItem('githubPat');
             return false;
+        }
+    }, [loadLocalSettings]);
+    
+    const resetState = useCallback(() => {
+        setAppState('concept');
+        setError(null);
+        setPresentationConcept('');
+        setInitialStoryPlan('');
+        setAllUploadedImages([]);
+        setAnalysisProgress({ currentIndex: 0, total: 0, currentAction: '', matrixText: '', isSynthesizing: false });
+        setAnalysisCursor({ imagesToAnalyze: [], currentIndex: 0, status: 'idle' });
+        setEvolvingStorySummary('');
+        setChatMessages([]);
+        setSlides([]);
+        setApiCallLogs([]);
+        setRetryAction(null);
+        setIsQuotaErrorModalOpen(false);
+    }, []);
+
+    const handleConceptSubmit = async (concept: string) => {
+        setPresentationConcept(concept);
+        setAppState('generating_plan');
+        try {
+            const response = await gemini.createInitialPlan(concept, onApiLog);
+            setInitialStoryPlan(response.text);
+            setAppState('upload');
+        } catch (e) {
+            handleError(e, () => handleConceptSubmit(concept));
         }
     };
     
-    const urlToUploadedImage = async (url: string, query: string, source: 'ai' | 'user'): Promise<UploadedImage> => {
-        const response = await fetch(url);
-        const blob = await response.blob();
-        const file = new File([blob], `${query.replace(/\s/g, '_')}_${Date.now()}.jpg`, { type: blob.type });
-    
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-                const base64 = (reader.result as string).split(',')[1];
-                if (!base64) {
-                    return reject(new Error('Failed to read file as base64.'));
-                }
-                const newImage: UploadedImage = {
-                    id: crypto.randomUUID(),
-                    file,
-                    base64,
-                    source,
-                    query,
-                };
-                resolve(newImage);
-            };
-            reader.onerror = error => reject(error);
-            reader.readAsDataURL(file);
-        });
-    };
-    
-    const handleAddImageToSlide = (newImage: UploadedImage, slideIndex: number) => {
-        setAllUploadedImages(prev => [...prev, newImage]);
-        
-        setSlides(prevSlides => prevSlides.map((slide, index) => {
-            if (index === slideIndex) {
-                return { ...slide, imageId: newImage.id, needsImage: false };
+    const handleUpload = async (images: UploadedImage[]) => {
+        const imagesWithLocation = await Promise.all(images.map(async img => {
+            if (img.exif?.latitude && img.exif?.longitude) {
+                const locationDescription = await location.findLocationDetails(img.exif.latitude, img.exif.longitude);
+                return { ...img, locationDescription };
             }
-            return slide;
+            return img;
         }));
+        setAllUploadedImages(prev => [...prev, ...imagesWithLocation]);
+        startAnalysis(imagesWithLocation);
+        setAppState('analyzing');
     };
 
-    const handleAddImagesFromSearch = async (images: {url: string, query: string}[]) => {
-        setIsSearchModalOpen(false);
-        if (activeSlideForImageAction === null) return;
+    const startAnalysis = (imagesToAnalyze: UploadedImage[]) => {
+        setAnalysisCursor({ imagesToAnalyze, currentIndex: 0, status: 'running' });
+        setAnalysisProgress({ total: imagesToAnalyze.length + 1, currentIndex: 0, currentAction: 'Начинаю анализ...', matrixText: '', isSynthesizing: false });
+        setEvolvingStorySummary('');
+    };
 
-        try {
-            if (images.length > 0) {
-                const newUploadedImage = await urlToUploadedImage(images[0].url, images[0].query, 'user');
-                handleAddImageToSlide(newUploadedImage, activeSlideForImageAction);
+    const resumeAnalysis = useCallback(() => {
+        setAnalysisCursor(prev => ({ ...prev, status: 'running' }));
+    }, []);
+
+    useEffect(() => {
+        if (analysisCursor.status !== 'running' || appState !== 'analyzing') return;
+
+        const processNextImage = async () => {
+            const currentImage = analysisCursor.imagesToAnalyze[analysisCursor.currentIndex];
+            const previousImages = allUploadedImagesRef.current.filter(img => img.description);
+            try {
+                setAnalysisProgress(prev => ({ ...prev, currentAction: `Анализирую изображение ${prev.currentIndex + 1}...`, currentIndex: prev.currentIndex + 1 }));
+                const { imageDescription, updatedStory } = await gemini.analyzeNextFrame(currentImage, previousImages, evolvingStorySummary, onApiLog);
+                setAllUploadedImages(prev => prev.map(img => img.id === currentImage.id ? { ...img, description: imageDescription } : img));
+                setEvolvingStorySummary(updatedStory);
+                setAnalysisCursor(prev => ({ ...prev, currentIndex: prev.currentIndex + 1 }));
+            } catch (e) {
+                setAnalysisCursor(prev => ({ ...prev, status: 'paused' }));
+                handleError(e, resumeAnalysis);
             }
-        } catch (error) {
-            console.error("Failed to process images from search:", error);
-            alert("Не удалось добавить изображения из поиска.");
+        };
+
+        const synthesizeFinalStory = async () => {
+            const retrySynth = () => setAnalysisCursor(prev => ({...prev, status: 'running' }));
+            try {
+                setAnalysisProgress(prev => ({ ...prev, isSynthesizing: true, currentAction: 'Синтезирую финальный сценарий...', currentIndex: prev.total }));
+                const analyzedImages = allUploadedImagesRef.current.filter(img => img.description);
+                const response = await gemini.generateStoryboard(evolvingStorySummary, analyzedImages, onApiLog);
+                const parsedSlides = parseSlidesFromJson(response.text);
+                setSlides(parsedSlides);
+                setAppState('chat');
+                setAnalysisCursor({ imagesToAnalyze: [], currentIndex: 0, status: 'done' });
+            } catch (e) {
+                setAnalysisCursor(prev => ({ ...prev, status: 'paused' }));
+                handleError(e, retrySynth);
+            }
+        };
+
+        if (analysisCursor.currentIndex >= analysisCursor.imagesToAnalyze.length) {
+            synthesizeFinalStory();
+        } else {
+            processNextImage();
+        }
+    }, [analysisCursor, appState, evolvingStorySummary, onApiLog, resumeAnalysis]);
+
+    const handleSendMessage = async (message: string) => {
+        const userMessage: ChatMessage = { role: 'user', parts: [{ text: message }] };
+        setChatMessages(prev => [...prev, userMessage]);
+        setIsTyping(true);
+        try {
+            const response = await gemini.continueChat([...chatMessages, userMessage], allUploadedImages, slides, onApiLog);
+            const modelMessage: ChatMessage = { role: 'model', parts: [{ text: response.text }] };
+            const updatedSlides = parseSlidesFromJson(response.text);
+            setSlides(updatedSlides);
+            setChatMessages(prev => [...prev, modelMessage]);
+        } catch (e) {
+            handleError(e, () => handleSendMessage(message));
+            setChatMessages(prev => prev.slice(0, -1));
+        } finally {
+            setIsTyping(false);
+        }
+    };
+
+    const handleFinalize = async () => {
+        setAppState('presentation');
+        try {
+            const response = await gemini.suggestMusic(presentationConcept, slides, onApiLog);
+            const suggestions = JSON.parse(response.text);
+            if (Array.isArray(suggestions)) {
+                setMusicSuggestions(suggestions);
+            }
+        } catch (e) {
+            console.error("Failed to get music suggestions:", e);
+        }
+    };
+
+    const handleOpenSearch = (query: string, slideIndex: number) => {
+        setSearchQuery(query);
+        setActiveSlideForImageAction(slideIndex);
+        setIsSearchModalOpen(true);
+    };
+
+    const handleGenerateImage = async (prompt: string, slideIndex: number) => {
+        setActiveSlideForImageAction(slideIndex);
+        try {
+            const base64Image = await gemini.generateImage(prompt, onApiLog);
+            const newImage: UploadedImage = {
+                id: crypto.randomUUID(),
+                file: new File([], `${prompt.slice(0, 20)}.png`, { type: 'image/png' }),
+                base64: base64Image,
+                source: 'ai',
+                query: prompt,
+            };
+            setAllUploadedImages(prev => [...prev, newImage]);
+            setSlides(prevSlides => prevSlides.map((slide, index) => 
+                index === slideIndex ? { ...slide, imageId: newImage.id, needsImage: false } : slide
+            ));
+        } catch (e) {
+            handleError(e, () => handleGenerateImage(prompt, slideIndex));
         } finally {
             setActiveSlideForImageAction(null);
         }
     };
     
-    const handleGenerateImageForSlide = async (prompt: string, slideIndex: number) => {
-        const generateAction = async () => {
-            setIsTyping(true);
-            setApiCallLogs([]);
-            try {
-                const base64Data = await gemini.generateImage(prompt, onApiLog);
-                const imageUrl = `data:image/png;base64,${base64Data}`;
-                const newUploadedImage = await urlToUploadedImage(imageUrl, prompt, 'ai');
-                handleAddImageToSlide(newUploadedImage, slideIndex);
-            } catch (e) {
-                handleError(e, generateAction);
-            } finally {
-                setIsTyping(false);
-            }
-        };
-        await generateAction();
+    const handleAddImagesFromSearch = async (imagesToAdd: {url: string, query: string}[]) => {
+        if (activeSlideForImageAction === null) return;
+        setIsSearchModalOpen(false);
+        try {
+            const imagePromises = imagesToAdd.map(async (img) => {
+                const response = await fetch(img.url);
+                const blob = await response.blob();
+                const base64 = await new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+                return { id: crypto.randomUUID(), file: new File([blob], `${img.query.slice(0,20)}.jpg`, { type: blob.type }), base64, source: 'ai', query: img.query } as UploadedImage;
+            });
+            const newImages = await Promise.all(imagePromises);
+            setAllUploadedImages(prev => [...prev, ...newImages]);
+            setSlides(prevSlides => prevSlides.map((slide, index) => 
+                index === activeSlideForImageAction ? { ...slide, imageId: newImages[0].id, needsImage: false } : slide
+            ));
+        } catch (e) {
+            handleError(e);
+        } finally {
+            setActiveSlideForImageAction(null);
+        }
     };
 
-    const handleAssignImageToSlide = (imageId: string, slideIndex: number) => {
-        setSlides(prevSlides => prevSlides.map((slide, index) => {
-            if (index === slideIndex) {
-                return { ...slide, imageId: imageId, needsImage: false };
-            }
-            return slide;
-        }));
+    const handleChangeImage = (slideIndex: number) => {
+        setActiveSlideForImageAction(slideIndex);
+        setIsImagePickerModalOpen(true);
+    };
+
+    const handleSelectImageFromPicker = (imageId: string) => {
+        if (activeSlideForImageAction !== null) {
+            setSlides(prevSlides => prevSlides.map((slide, index) => 
+                index === activeSlideForImageAction ? { ...slide, imageId, needsImage: false } : slide
+            ));
+        }
         setIsImagePickerModalOpen(false);
         setActiveSlideForImageAction(null);
     };
 
+    const handleExport = async (format: ExportFormat) => {
+        if (isExporting) return;
+        setIsExporting(true);
+        try {
+            if (format === 'pdf') await exportToPdf(slides, allUploadedImages);
+            else if (format === 'pptx') await exportToPptx(slides, allUploadedImages, settings.voiceSettings.isPodcastMode);
+            else if (format === 'html') await exportToHtml(slides, allUploadedImages, settings.voiceSettings);
+            else if (format === 'video') setIsVideoModalOpen(true);
+        } catch (e) {
+            handleError(e);
+        } finally {
+            if (format !== 'video') setIsExporting(false);
+        }
+    };
+
     const handleGenerateVideo = async (style: string) => {
-        const generateAction = async () => {
-            setIsVideoModalOpen(false);
-            setVideoGenState('generating');
-            setVideoProgress({ message: 'Отправка запроса на генерацию...', url: null, error: null });
-            setApiCallLogs([]);
-
-            try {
-                const imagesForVideo = slides.map(s => allUploadedImages.find(i => i.id === s.imageId)).filter(Boolean) as UploadedImage[];
-                let operation = await gemini.generateVideo(slides, imagesForVideo, style, onApiLog);
-                const pollMessages = [
-                    'Компоновка сцен...', 'Рендеринг ключевых кадров...', 'Применение выбранного стиля...',
-                    'Синхронизация аудиодорожки...', 'Финальная обработка видео...'
-                ];
-                let messageIndex = 0;
-                
-                while (!operation.done) {
-                    await new Promise(resolve => setTimeout(resolve, 10000));
-                    setVideoProgress(p => ({ ...p, message: pollMessages[messageIndex % pollMessages.length] }));
-                    messageIndex++;
-                    operation = await gemini.checkVideoStatus(operation, onApiLog);
-                }
-
-                const downloadUri = operation.response?.generatedVideos?.[0]?.video?.uri;
-                if (!downloadUri) throw new Error('API не вернуло ссылку на сгенерированное видео.');
-
-                setVideoProgress(p => ({ ...p, message: 'Загрузка превью...' }));
-                const apiKey = gemini.getCurrentApiKey();
-                if (!apiKey) throw new Error("Нет активного API ключа для загрузки видео.");
-
-                const response = await fetch(`${downloadUri}&key=${apiKey}`);
-                if (!response.ok) throw new Error(`Не удалось загрузить видеофайл (статус: ${response.status}).`);
-
-                const blob = await response.blob();
-                const videoUrl = URL.createObjectURL(blob);
-                setVideoProgress({ message: 'Готово!', url: videoUrl, error: null });
-                setVideoGenState('success');
-            } catch (e: any) {
-                console.error("Video generation failed:", e);
-                setVideoProgress({ message: '', url: null, error: e.message || 'Произошла неизвестная ошибка во время генерации.' });
-                setVideoGenState('error');
+        setIsVideoModalOpen(false);
+        setVideoGenState('generating');
+        setVideoProgress({ message: 'Отправка запроса на генерацию...', url: null, error: null });
+        try {
+            const operation = await gemini.generateVideo(slides, allUploadedImages, style, onApiLog);
+            let videoOp = operation;
+            for (let i = 0; i < 30; i++) { // Timeout after ~5 mins
+                if (videoOp.done) break;
+                setVideoProgress(prev => ({ ...prev, message: `Обработка видео... (попытка ${i + 1}/30)` }));
+                await new Promise(resolve => setTimeout(resolve, 10000));
+                videoOp = await gemini.checkVideoStatus(videoOp, onApiLog);
             }
-        };
-        await generateAction();
-    };
-
-    const handleCloseVideoOverlay = () => {
-        const url = videoProgress.url;
-        if (url) URL.revokeObjectURL(url);
-        setVideoGenState('idle');
-        setVideoProgress({ message: '', url: null, error: null });
-    };
-
-    const renderContent = () => {
-        switch (appState) {
-            case 'concept':
-                return <ConceptInput onConceptSubmit={handleConceptSubmit} />;
-            case 'generating_plan':
-                return <PlanGenerationLoader />;
-            case 'upload':
-                return <ImageUploader onUpload={handleImagesUpload} initialPlan={initialStoryPlan} />;
-            case 'analyzing':
-                return <AnalysisLoader 
-                    images={analysisCursor.imagesToAnalyze} 
-                    allImages={allUploadedImages}
-                    progress={analysisProgress} 
-                    lastApiLog={apiCallLogs[apiCallLogs.length - 1]} 
-                    evolvingStorySummary={evolvingStorySummary}
-                />;
-            case 'chat':
-                return <ChatWindow 
-                    slides={slides}
-                    allImages={allUploadedImages}
-                    onSendMessage={handleSendMessage} 
-                    onFinalize={handleFinalizeScript} 
-                    isTyping={isTyping}
-                    onSearch={(query, slideIndex) => { 
-                        setSearchQuery(query); 
-                        setActiveSlideForImageAction(slideIndex);
-                        setIsSearchModalOpen(true); 
-                    }}
-                    onGenerate={handleGenerateImageForSlide}
-                    onChangeImage={(slideIndex) => {
-                        setActiveSlideForImageAction(slideIndex);
-                        setIsImagePickerModalOpen(true);
-                    }}
-                 />;
-            case 'presentation':
-                return <PresentationViewer 
-                    slides={slides}
-                    images={allUploadedImages}
-                    onExport={handleExport}
-                    isExporting={isExporting}
-                    onRestart={handleRestart}
-                    onEditScript={() => setAppState('chat')}
-                    voiceSettings={settings.voiceSettings}
-                    onVoiceSettingsChange={(newVoiceSettings) => handleSettingsChange({...settings, voiceSettings: newVoiceSettings })}
-                    musicSuggestions={musicSuggestions}
-                    onApiLog={onApiLog}
-                />;
-            case 'error':
-                 return (
-                    <ErrorState 
-                        error={error}
-                        onRetry={async () => {
-                            if (retryAction) {
-                                await retryAction();
-                            }
-                        }}
-                        onOpenSettings={() => setIsSettingsOpen(true)}
-                        onRestart={handleRestart}
-                    />
-                );
+            if (videoOp.done && videoOp.response?.generatedVideos?.[0]?.video?.uri) {
+                const keyToUse = gemini.getCurrentApiKey();
+                if (!keyToUse) throw new Error("Нет ключа для скачивания видео.");
+                const fullUrl = `${videoOp.response.generatedVideos[0].video.uri}&key=${keyToUse}`;
+                setVideoProgress({ message: 'Готово!', url: fullUrl, error: null });
+                setVideoGenState('success');
+            } else {
+                throw new Error(videoOp.error?.message || 'Не удалось сгенерировать видео за отведенное время.');
+            }
+        } catch(e) {
+            const message = e instanceof Error ? e.message : String(e);
+            setVideoProgress({ message: '', url: null, error: message });
+            setVideoGenState('error');
         }
     };
     
-    if (initState === 'initializing') {
-        return <SplashScreen onStart={() => setInitState('ready')} />;
-    }
+    const closeVideoOverlay = () => {
+        setVideoGenState('idle');
+        setIsExporting(false);
+    };
 
-    if (authState === null) {
+    if (initState === 'initializing' || authState === null) {
         return (
-             <div className="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
-                <Loader message="Проверка авторизации..." />
+            <div className="bg-gray-900 text-white min-h-screen flex items-center justify-center">
+                <Loader message="Инициализация..." />
             </div>
-        )
+        );
     }
-
+    
     if (authState === 'unauthenticated') {
+        if (showSplash) {
+            return <SplashScreen onStart={() => setShowSplash(false)} />;
+        }
         return <GitHubAuthModal onLogin={handleLogin} />;
     }
 
     return (
-        <div className="bg-gray-900 text-white min-h-screen flex flex-col p-4">
-            <Header onRestart={handleRestart} onOpenSettings={() => setIsSettingsOpen(true)} />
+        <div className="bg-gray-900 text-white min-h-screen p-4 flex flex-col">
+            <Header onRestart={resetState} onOpenSettings={() => setIsSettingsOpen(true)} />
+            
             <main className="flex-grow flex flex-col items-center justify-center">
-                {renderContent()}
+                {appState === 'concept' && <ConceptInput onConceptSubmit={handleConceptSubmit} />}
+                {appState === 'generating_plan' && <PlanGenerationLoader />}
+                {appState === 'upload' && <ImageUploader initialPlan={initialStoryPlan} onUpload={handleUpload} />}
+                {appState === 'analyzing' && <AnalysisLoader images={analysisCursor.imagesToAnalyze} allImages={allUploadedImages} progress={analysisProgress} lastApiLog={apiCallLogs.length > 0 ? apiCallLogs[apiCallLogs.length - 1] : undefined} evolvingStorySummary={evolvingStorySummary} />}
+                {appState === 'chat' && <ChatWindow slides={slides} allImages={allUploadedImages} onSendMessage={handleSendMessage} onFinalize={handleFinalize} isTyping={isTyping} onSearch={handleOpenSearch} onGenerate={handleGenerateImage} onChangeImage={handleChangeImage} />}
+                {appState === 'presentation' && <PresentationViewer slides={slides} images={allUploadedImages} onExport={handleExport} isExporting={isExporting} onRestart={resetState} onEditScript={() => setAppState('chat')} voiceSettings={settings.voiceSettings} onVoiceSettingsChange={v => handleSettingsChange({...settings, voiceSettings: v})} musicSuggestions={musicSuggestions} onApiLog={onApiLog} />}
+                {appState === 'error' && <ErrorState error={error} onRetry={retryAction!} onOpenSettings={() => setIsSettingsOpen(true)} onRestart={resetState} />}
             </main>
 
+            <ApiKeyModal isOpen={isApiKeyMissing} onClose={() => { setIsApiKeyMissing(false); setIsSettingsOpen(true); }} message={null} />
+
+            <QuotaErrorModal
+              isOpen={isQuotaErrorModalOpen}
+              failedKeys={failedKeys}
+              onRetry={() => {
+                  if (retryAction) {
+                      setIsQuotaErrorModalOpen(false);
+                      const action = retryAction;
+                      setRetryAction(null);
+                      action();
+                  }
+              }}
+              onOpenSettings={() => {
+                  setIsQuotaErrorModalOpen(false);
+                  setIsSettingsOpen(true);
+              }}
+              onClose={() => {
+                  setIsQuotaErrorModalOpen(false);
+                  setRetryAction(null);
+              }}
+            />
+            
             <SettingsPanel 
                 isOpen={isSettingsOpen}
-                onClose={() => setIsSettingsOpen(false)}
+                onClose={() => {
+                    setIsSettingsOpen(false);
+                    if (retryAction && !isQuotaErrorModalOpen) {
+                        setIsQuotaErrorModalOpen(true);
+                    }
+                }}
                 settings={settings}
                 onSettingsChange={handleSettingsChange}
                 githubUser={githubUser}
@@ -781,64 +617,10 @@ const App: React.FC = () => {
                 syncStatus={syncStatus}
             />
             
-            <ApiKeyModal 
-                isOpen={isApiKeyMissing && !isSettingsOpen}
-                onClose={() => { setIsApiKeyMissing(false); setError(null); setIsSettingsOpen(true); }}
-                message={error}
-            />
-
-            <QuotaErrorModal 
-                isOpen={isQuotaErrorModalOpen}
-                failedKeys={failedKeys}
-                onRetry={async () => {
-                    setIsQuotaErrorModalOpen(false);
-                    if (retryAction) {
-                        await retryAction();
-                    }
-                }}
-                onOpenSettings={() => {
-                    setIsQuotaErrorModalOpen(false);
-                    setIsSettingsOpen(true);
-                }}
-            />
-
-            <ImageSearchModal 
-                isOpen={isSearchModalOpen}
-                onClose={() => {
-                    setIsSearchModalOpen(false);
-                    setActiveSlideForImageAction(null);
-                }}
-                query={searchQuery}
-                onAddImages={handleAddImagesFromSearch}
-            />
-
-            <ImagePickerModal
-                isOpen={isImagePickerModalOpen}
-                onClose={() => {
-                    setIsImagePickerModalOpen(false);
-                    setActiveSlideForImageAction(null);
-                }}
-                images={allUploadedImages}
-                onSelect={(imageId) => {
-                    if(activeSlideForImageAction !== null) {
-                       handleAssignImageToSlide(imageId, activeSlideForImageAction)
-                    }
-                }}
-            />
-
-            <VideoExportModal 
-                isOpen={isVideoModalOpen}
-                onClose={() => setIsVideoModalOpen(false)}
-                onGenerate={handleGenerateVideo}
-            />
-
-            {videoGenState !== 'idle' && (
-                <VideoGenerationOverlay 
-                    state={videoGenState}
-                    progress={videoProgress}
-                    onClose={handleCloseVideoOverlay}
-                />
-            )}
+            <ImageSearchModal isOpen={isSearchModalOpen} onClose={() => setIsSearchModalOpen(false)} query={searchQuery} onAddImages={handleAddImagesFromSearch} />
+            <ImagePickerModal isOpen={isImagePickerModalOpen} onClose={() => setIsImagePickerModalOpen(false)} images={allUploadedImages} onSelect={handleSelectImageFromPicker} />
+            <VideoExportModal isOpen={isVideoModalOpen} onClose={() => { setIsVideoModalOpen(false); setIsExporting(false); }} onGenerate={handleGenerateVideo} />
+            {videoGenState !== 'idle' && <VideoGenerationOverlay state={videoGenState} progress={videoProgress} onClose={closeVideoOverlay} />}
         </div>
     );
 };
