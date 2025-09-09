@@ -161,8 +161,11 @@ export const healthCheckAllKeys = async (): Promise<void> => {
     
     await Promise.all(keyPool.map(async (key) => {
         try {
-            const model = keyPool.find(k=>k.isPinned)?.projectId || 'gemini-2.5-flash';
-            const endpoint = keyPool.find(k=>k.isPinned)?.projectId || 'generativelanguage.googleapis.com/v1beta';
+            // FIX: Removed faulty logic that used `projectId` as the model/endpoint.
+            // Using stable default values for the initial health check ensures that
+            // requests are formatted correctly, preventing "Model not found" errors.
+            const model = 'gemini-2.5-flash';
+            const endpoint = 'generativelanguage.googleapis.com/v1beta';
             
             const status = await checkApiKey(key.value, model, endpoint);
             const keyToUpdate = keyPool.find(k => k.value === key.value);

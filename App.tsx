@@ -1,5 +1,3 @@
-
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UploadedImage, ChatMessage, Slide, AnalysisProgress, ExportFormat, VoiceSettings, ApiKey, GithubUser, AppSettings, SyncStatus, LogEntry } from './types';
 import * as gemini from './services/geminiService';
@@ -175,7 +173,9 @@ const AppContent: React.FC = () => {
     useEffect(() => {
         const startup = async () => {
             logger.logInfo('Application initializing...');
+            let loadedSettings: AppSettings;
             const pat = localStorage.getItem('githubPat');
+
             if (pat) {
                 try {
                     setSyncStatus('syncing');
@@ -187,39 +187,56 @@ const AppContent: React.FC = () => {
                     logger.logInfo(`Authenticated as ${user.login}. Fetching settings from Gist...`);
                     const result = await github.getSettingsFromGist(pat);
                     if (result) {
-                        setSettings({ ...DEFAULT_SETTINGS, ...result.settings });
+                        loadedSettings = { ...DEFAULT_SETTINGS, ...result.settings };
                         setGistId(result.gistId);
                         setSyncStatus('success');
-                         logger.logSuccess('Settings loaded from GitHub Gist.');
+                        logger.logSuccess('Settings loaded from GitHub Gist.');
                     } else {
-                        setSettings(loadLocalSettings());
+                        loadedSettings = loadLocalSettings();
                         setSyncStatus('idle');
                         logger.logInfo('No settings Gist found, using local settings.');
                     }
                     setAuthState('authenticated');
-                    setShowSplash(false); 
                 } catch (e) {
                     console.error("GitHub auth/fetch error. Using local settings.", e);
                     if (e instanceof github.GitHubAuthError) {
                         logger.logError('GitHub authentication failed. Logging out.');
                         handleLogout();
+                        return; // Exit if logout is forced
                     } else {
+                        loadedSettings = loadLocalSettings();
                         setAuthState('authenticated');
-                        setShowSplash(false);
-                        setSettings(loadLocalSettings());
                         setSyncStatus('error');
                         logger.logError('Failed to fetch settings from Gist, using local settings.');
                     }
                 }
             } else {
-                setSettings(loadLocalSettings());
+                loadedSettings = loadLocalSettings();
                 setAuthState('unauthenticated');
-                 logger.logInfo('No GitHub token found. Awaiting user login.');
+                logger.logInfo('No GitHub token found. Awaiting user login.');
+            }
+
+            // --- FIX: Ensure health check runs correctly on startup ---
+            // 1. Initialize the gemini service with the loaded keys.
+            gemini.initializeApiKeys(loadedSettings.apiKeys);
+            
+            // 2. Run the health check for all keys and wait for it to complete.
+            await gemini.healthCheckAllKeys();
+            
+            // 3. Get the updated, verified key status back from the service.
+            const verifiedKeys = gemini.getKeyPoolState();
+            
+            // 4. Update the loaded settings with the correct key statuses.
+            loadedSettings.apiKeys = verifiedKeys;
+            
+            // 5. Set the final, verified settings into the application state.
+            setSettings(loadedSettings);
+            // --- END FIX ---
+            
+            if (authState !== 'unauthenticated') {
+                setShowSplash(false);
             }
             setInitState('ready');
-            // Perform a health check on all keys after initial settings are loaded.
-            // This runs in the background and doesn't block the UI.
-            gemini.healthCheckAllKeys();
         };
         startup();
     }, [loadLocalSettings, handleLogout]);
