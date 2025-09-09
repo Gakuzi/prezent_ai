@@ -47,6 +47,26 @@ const tokenUsageStats: Record<string, { prompt: number; candidates: number; tota
 const KEY_COOLDOWN_PERIOD = 24 * 60 * 60 * 1000; // 24 hours
 const SHORT_COOLDOWN_PERIOD = 5 * 60 * 1000; // 5 minutes for transient errors
 
+/**
+ * A centralized, strict check to determine if a key is usable right now.
+ * This is the single source of truth for key availability.
+ * @param key The API key object to check.
+ * @param now The current timestamp (can be passed in for consistency).
+ * @returns {boolean} True if the key is available, false otherwise.
+ */
+const isKeyAvailable = (key: ApiKey, now: number = Date.now()): boolean => {
+    const unavailableStatuses: ApiKey['status'][] = ['invalid', 'exhausted', 'rate_limited', 'config_error', 'unknown'];
+    if (unavailableStatuses.includes(key.status)) {
+        return false;
+    }
+    if (key.resetTime && key.resetTime > now) {
+        return false;
+    }
+    // If status is 'active' and not on cooldown, it's available.
+    return true;
+};
+
+
 export const initializeApiKeys = (keysFromSettings: ApiKey[]) => {
     const liveKeyMap = new Map(keyPool.map(k => [k.value, k]));
     
@@ -64,13 +84,10 @@ export const initializeApiKeys = (keysFromSettings: ApiKey[]) => {
         return keyFromSettings;
     });
     
-    const now = Date.now();
-    const potentialPoolSize = keyPool.filter(k => {
-        const isInvalid = k.status === 'invalid' || k.status === 'config_error';
-        const isOnCooldown = k.resetTime && k.resetTime > now;
-        return !isInvalid && !isOnCooldown;
-    }).length;
-    logger.logInfo(`Key pool updated. Total keys: ${keyPool.length}. Available: ${potentialPoolSize}`);
+    // FIX: Correctly calculate available keys by using the new strict `isKeyAvailable` helper.
+    // This ensures that 'exhausted' and 'rate_limited' keys are properly excluded from the count.
+    const availableCount = keyPool.filter(k => isKeyAvailable(k)).length;
+    logger.logInfo(`Key pool updated. Total keys: ${keyPool.length}. Available: ${availableCount}`);
 };
 
 // --- Custom Errors ---
@@ -105,8 +122,7 @@ export const resetExhaustedKeys = (): void => {
     });
 
     if (keysReset > 0) {
-        const now = Date.now();
-        const availableCount = keyPool.filter(k => k.status === 'active' && (!k.resetTime || k.resetTime <= now)).length;
+        const availableCount = keyPool.filter(k => isKeyAvailable(k)).length;
         logger.logInfo(`[Recovery] Reset ${keysReset} exhausted key statuses. Available keys: ${availableCount}`);
     }
 };
@@ -166,8 +182,8 @@ export const healthCheckAllKeys = async (): Promise<void> => {
         }
     }));
     
-    const now = Date.now();
-    const availableCount = keyPool.filter(k => k.status === 'active' && (!k.resetTime || k.resetTime <= now)).length;
+    // FIX: Use the consistent `isKeyAvailable` helper for the final log message.
+    const availableCount = keyPool.filter(k => isKeyAvailable(k)).length;
     logger.logSuccess(`Health check for all keys completed. Available keys: ${availableCount}`);
 };
 
@@ -186,14 +202,11 @@ const makeGoogleApiCall = async (
         return pinnedKey ? [pinnedKey, ...otherKeys] : otherKeys;
     };
     
-    const now = Date.now();
     const allKeysInOrder = getOrderedKeys();
 
-    const getAvailableKeys = () => allKeysInOrder.filter(k => {
-        const isBadStatus = k.status === 'invalid' || k.status === 'config_error' || k.status === 'unknown';
-        const isOnCooldown = k.resetTime && k.resetTime > now;
-        return !isBadStatus && !isOnCooldown;
-    });
+    // FIX: The key availability check is now strict and correct, using the new `isKeyAvailable` helper.
+    // It will no longer attempt to use keys that are exhausted, rate-limited, invalid, or unknown.
+    const getAvailableKeys = () => allKeysInOrder.filter(k => isKeyAvailable(k));
 
     const keysAvailableAtStart = getAvailableKeys();
     
@@ -203,9 +216,12 @@ const makeGoogleApiCall = async (
         throw new AllKeysFailedError(message, JSON.parse(JSON.stringify(keyPool)));
     }
     
+    // Iterate through ALL keys, but the filter inside the loop will skip unavailable ones.
     for (const keyState of allKeysInOrder) {
-        if (keyState.status === 'invalid' || keyState.status === 'config_error' || keyState.status === 'unknown') continue;
-        if (keyState.resetTime && keyState.resetTime > Date.now()) continue;
+        // This check ensures we only proceed with a key that is actually usable.
+        if (!isKeyAvailable(keyState)) {
+            continue;
+        }
 
         const currentKey = keyState.value;
         const maskedKey = `...${currentKey.slice(-4)}`;
@@ -217,8 +233,6 @@ const makeGoogleApiCall = async (
                 maskedKey, model, endpoint, requestPayload: payload 
             });
             
-            // FIX: Always prefix the model with 'models/' for the REST API path.
-            // This corrects the URL for non-gemini models like 'imagen' or 'veo'.
             const modelPath = `models/${model}`;
             const url = `https://${endpoint}/${modelPath}:${payload.hasOwnProperty('prompt') ? 'generateImages' : 'generateContent'}?key=${currentKey}`;
             const options: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
@@ -304,8 +318,8 @@ const makeGoogleApiCall = async (
 
 const performSelfCheck = async (model: string, endpoint: string): Promise<void> => {
     logger.logInfo("Performing self-check before operation...", { model, endpoint });
-    const now = Date.now();
-    const firstAvailableKey = keyPool.find(k => k.status !== 'invalid' && k.status !== 'config_error' && (!k.resetTime || k.resetTime <= now));
+    
+    const firstAvailableKey = keyPool.find(k => isKeyAvailable(k));
     
     if (!firstAvailableKey) {
         if (keyPool.length > 0) throw new AllKeysFailedError("No keys available for self-check.", keyPool);
@@ -319,7 +333,6 @@ const performSelfCheck = async (model: string, endpoint: string): Promise<void> 
             logger.logError(`Self-check failed: ${error.message}. Halting operation.`, { model, endpoint });
             throw error;
         }
-        // FIX: Replaced non-existent 'error' property with 'apiError' to match the LogDetails type.
         logger.logWarning(`Self-check on key ...${firstAvailableKey.value.slice(-4)} encountered a non-config error. Proceeding with operation.`, { apiError: { message: error instanceof Error ? error.message : String(error) } });
     }
 };
@@ -511,14 +524,11 @@ export const generateImage = async (query: string): Promise<string> => {
         number_of_images: 1,
         aspect_ratio: "16:9"
     };
-    // Assuming image generation uses a fixed model/endpoint for now
     const responseData = await makeGoogleApiCall('imagen-4.0-generate-001', 'generativelanguage.googleapis.com/v1beta', payload);
     return responseData.generated_images[0].image.image_bytes;
 };
 
 export const generateVideo = (slides: Slide[], images: UploadedImage[], style: string): Promise<any> => {
-    // Assuming video generation uses a fixed model/endpoint
-    // No self-check here as it's a long-running operation with a different pattern
     const combinedScript = slides.map(s => s.script).join('\n\n');
     const prompt = `Создай концептуальное видео в стиле "${style}" на основе следующего сценария: ${combinedScript}. Видео должно отражать общее настроение и ключевые моменты истории.`;
     const seedImage = images[Math.floor(images.length / 2)];
@@ -531,7 +541,6 @@ export const generateVideo = (slides: Slide[], images: UploadedImage[], style: s
 };
 
 export const checkVideoStatus = (operation: any): Promise<any> => {
-    // This function needs to be adapted to the new `makeGoogleApiCall` structure if it uses the same endpoint logic
     return makeGoogleApiCall(operation.name, 'generativelanguage.googleapis.com/v1beta', {}, 'GET');
 };
 
@@ -541,8 +550,6 @@ export const checkApiKey = async (key: string, model: string, endpoint: string):
     const startTime = Date.now();
     logger.logInfo(`Checking API key ${maskedKey}`, { maskedKey, model, endpoint, requestPayload: payload });
     try {
-        // FIX: Always prefix the model with 'models/' for the REST API path.
-        // This ensures health checks work for any valid model type, not just 'gemini*'.
         const modelPath = `models/${model}`;
         const url = `https://${endpoint}/${modelPath}:generateContent?key=${key}`;
         const response = await fetch(url, {
@@ -612,12 +619,11 @@ export const generateSsmlScript = async (script: string, settings: AppSettings):
 };
 
 export const getCurrentApiKey = (): string | null => {
-    const now = Date.now();
     const pinnedKey = keyPool.find(k => k.isPinned);
-    if (pinnedKey && (!pinnedKey.resetTime || pinnedKey.resetTime <= now) && pinnedKey.status !== 'invalid') {
+    if (pinnedKey && isKeyAvailable(pinnedKey)) {
         return pinnedKey.value;
     }
-    const firstAvailable = keyPool.find(k => k.status !== 'invalid' && (!k.resetTime || k.resetTime <= now));
+    const firstAvailable = keyPool.find(k => isKeyAvailable(k));
     return firstAvailable ? firstAvailable.value : null;
 };
 
