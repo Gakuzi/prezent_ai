@@ -73,19 +73,24 @@ export const initializeApiKeys = (keysFromSettings: ApiKey[]) => {
     keyPool = keysFromSettings.map(keyFromSettings => {
         const liveKeyData = liveKeyMap.get(keyFromSettings.value);
         if (liveKeyData) {
+            // FIX: Corrected the merge logic to be robust.
+            // This prioritizes the live, in-memory state (liveKeyData) and only
+            // overwrites properties that are managed by the settings UI (e.g., isPinned).
+            // This prevents stale data from the React state (keyFromSettings) from
+            // incorrectly overwriting the correct status ('exhausted', 'rate_limited') of a key.
             return {
-                ...keyFromSettings,
-                status: liveKeyData.status,
-                lastChecked: liveKeyData.lastChecked,
-                resetTime: liveKeyData.resetTime,
-                lastError: liveKeyData.lastError,
+                ...liveKeyData, // Start with the live data as the base
+                isPinned: keyFromSettings.isPinned,
+                projectId: keyFromSettings.projectId,
             };
         }
-        return keyFromSettings;
+        // For new keys not present in the live pool, add them with default 'unknown' status.
+        return {
+            status: 'unknown',
+            ...keyFromSettings,
+        };
     });
     
-    // FIX: Correctly calculate available keys by using the new strict `isKeyAvailable` helper.
-    // This ensures that 'exhausted' and 'rate_limited' keys are properly excluded from the count.
     const availableCount = keyPool.filter(k => isKeyAvailable(k)).length;
     logger.logInfo(`Key pool updated. Total keys: ${keyPool.length}. Available: ${availableCount}`);
 };
