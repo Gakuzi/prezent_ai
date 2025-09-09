@@ -1,5 +1,4 @@
 
-
 // FIX: Added 'ExifData' to the import list from '../types'.
 import { UploadedImage, ChatMessage, Slide, ApiKey, AppSettings, ExifData } from '../types';
 import logger from './logger';
@@ -117,14 +116,13 @@ export const resetExhaustedKeys = (): void => {
  * Performs a health check on all keys in the pool to get their current status.
  * This runs on app startup to ensure the state is fresh.
  */
-export const performInitialHealthCheck = async (): Promise<void> => {
+export const healthCheckAllKeys = async (): Promise<void> => {
     if (keyPool.length === 0) return;
 
-    logger.logInfo("Performing initial health check for all keys...");
+    logger.logInfo("Performing health check for all keys...");
     
     await Promise.all(keyPool.map(async (key) => {
         try {
-            // Assuming default model/endpoint is set correctly for this check
             const model = keyPool.find(k=>k.isPinned)?.projectId || 'gemini-2.5-flash';
             const endpoint = keyPool.find(k=>k.isPinned)?.projectId || 'generativelanguage.googleapis.com/v1beta';
             
@@ -138,6 +136,8 @@ export const performInitialHealthCheck = async (): Promise<void> => {
                 } else if (status === 'active') {
                     keyToUpdate.resetTime = undefined;
                     keyToUpdate.lastError = undefined;
+                } else {
+                     keyToUpdate.resetTime = undefined;
                 }
             }
         } catch (error) {
@@ -151,7 +151,7 @@ export const performInitialHealthCheck = async (): Promise<void> => {
     
     const now = Date.now();
     const availableCount = keyPool.filter(k => k.status === 'active' && (!k.resetTime || k.resetTime <= now)).length;
-    logger.logSuccess(`Initial health check for all keys completed. Available keys: ${availableCount}`);
+    logger.logSuccess(`Health check for all keys completed. Available keys: ${availableCount}`);
 };
 
 
@@ -178,18 +178,12 @@ const makeGoogleApiCall = async (
         return !isBadStatus && !isOnCooldown;
     });
 
-    let keysAvailableAtStart = getAvailableKeys();
+    const keysAvailableAtStart = getAvailableKeys();
     
     if (keysAvailableAtStart.length === 0 && allKeysInOrder.length > 0) {
-        logger.logWarning("No keys immediately available. Attempting to reset exhausted keys as a recovery measure.");
-        resetExhaustedKeys();
-        keysAvailableAtStart = getAvailableKeys(); // Re-evaluate after reset
-
-        if (keysAvailableAtStart.length === 0) {
-            const message = 'No functional API keys available. All keys are either in an error state or remained exhausted after a reset attempt.';
-            logger.logError(message, { apiResponse: { failedKeys: keyPool } });
-            throw new AllKeysFailedError(message, JSON.parse(JSON.stringify(keyPool)));
-        }
+        const message = 'No functional API keys available. All keys are either in an error state or on cooldown.';
+        logger.logError(message, { apiResponse: { failedKeys: keyPool } });
+        throw new AllKeysFailedError(message, JSON.parse(JSON.stringify(keyPool)));
     }
     
     for (const keyState of allKeysInOrder) {
@@ -198,7 +192,6 @@ const makeGoogleApiCall = async (
 
         const currentKey = keyState.value;
         const maskedKey = `...${currentKey.slice(-4)}`;
-        // FIX: Find the key to update directly in the module-level keyPool.
         const keyToUpdate = keyPool.find(k => k.value === currentKey)!;
         const startTime = Date.now();
 
@@ -207,7 +200,6 @@ const makeGoogleApiCall = async (
                 maskedKey, model, endpoint, requestPayload: payload 
             });
 
-            // FIX: Add 'models/' prefix for gemini models, but not for others like 'imagen' or 'veo'.
             const modelPath = model.startsWith('gemini') ? `models/${model}` : model;
             const url = `https://${endpoint}/${modelPath}:${payload.hasOwnProperty('prompt') ? 'generateImages' : 'generateContent'}?key=${currentKey}`;
             const options: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
@@ -235,7 +227,6 @@ const makeGoogleApiCall = async (
                 if (isConfigError) {
                     keyToUpdate.status = 'config_error';
                     keyToUpdate.resetTime = undefined;
-                    // Critical error, stop everything.
                     throw new ConfigError(`Модель или конечная точка не найдены. Проверьте model и endpoint.`, model, endpoint);
                 } else if (isInvalid) {
                     keyToUpdate.status = 'invalid';
@@ -277,7 +268,6 @@ const makeGoogleApiCall = async (
             if (error instanceof ConfigError) throw error;
             const durationMs = Date.now() - startTime;
             const errorMessage = error.message || 'Network request failed';
-            // FIX: The 'LogDetails' type uses 'apiError' for error objects, not 'error'.
             logger.logError(`Network error with ${maskedKey}: ${errorMessage}`, {
                 maskedKey, model, endpoint, durationMs, apiError: { message: errorMessage, status: error.name || 'NETWORK_ERROR' }
             });
@@ -288,7 +278,6 @@ const makeGoogleApiCall = async (
     }
 
     const finalMessage = "All available API keys failed.";
-    // FIX: Pass a fresh copy of the *updated* keyPool to the UI.
     const finalKeyState = JSON.parse(JSON.stringify(keyPool));
     logger.logError(finalMessage, { apiResponse: { failedKeys: finalKeyState } });
     throw new AllKeysFailedError(finalMessage, finalKeyState);
@@ -296,7 +285,6 @@ const makeGoogleApiCall = async (
 
 const performSelfCheck = async (model: string, endpoint: string): Promise<void> => {
     logger.logInfo("Performing self-check before operation...", { model, endpoint });
-    // FIX: Define 'now' variable which was used but not declared in this scope.
     const now = Date.now();
     const firstAvailableKey = keyPool.find(k => k.status !== 'invalid' && k.status !== 'config_error' && (!k.resetTime || k.resetTime <= now));
     
@@ -312,9 +300,8 @@ const performSelfCheck = async (model: string, endpoint: string): Promise<void> 
             logger.logError(`Self-check failed: ${error.message}. Halting operation.`, { model, endpoint });
             throw error;
         }
-        // Other errors (like quota on the first key) are not critical for self-check,
-        // as the main loop will rotate to the next key.
-        logger.logWarning(`Self-check on key ...${firstAvailableKey.value.slice(-4)} encountered a non-config error. Proceeding with operation.`, { error });
+        // FIX: Replaced non-existent 'error' property with 'apiError' to match the LogDetails type.
+        logger.logWarning(`Self-check on key ...${firstAvailableKey.value.slice(-4)} encountered a non-config error. Proceeding with operation.`, { apiError: { message: error instanceof Error ? error.message : String(error) } });
     }
 };
 
@@ -535,7 +522,6 @@ export const checkApiKey = async (key: string, model: string, endpoint: string):
     const startTime = Date.now();
     logger.logInfo(`Checking API key ${maskedKey}`, { maskedKey, model, endpoint, requestPayload: payload });
     try {
-        // FIX: The URL was incorrectly prepending '/v1beta' when it was already part of the endpoint string.
         const modelPath = model.startsWith('gemini') ? `models/${model}` : model;
         const url = `https://${endpoint}/${modelPath}:generateContent?key=${key}`;
         const response = await fetch(url, {
@@ -615,5 +601,5 @@ export const getCurrentApiKey = (): string | null => {
 };
 
 export const getKeyPoolState = (): ApiKey[] => {
-    return keyPool;
+    return JSON.parse(JSON.stringify(keyPool));
 };

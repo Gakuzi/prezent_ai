@@ -57,7 +57,6 @@ const DEFAULT_SETTINGS: AppSettings = {
     apiKeys: [],
     voiceSettings: DEFAULT_VOICE_SETTINGS,
     pexelsApiKey: null,
-    // FIX: Updated the model to 'gemini-2.5-flash' as per the guidelines. 'gemini-1.5-flash' is prohibited.
     geminiModel: 'gemini-2.5-flash',
     geminiEndpoint: 'generativelanguage.googleapis.com/v1beta',
 };
@@ -220,7 +219,7 @@ const AppContent: React.FC = () => {
             setInitState('ready');
             // Perform a health check on all keys after initial settings are loaded.
             // This runs in the background and doesn't block the UI.
-            gemini.performInitialHealthCheck();
+            gemini.healthCheckAllKeys();
         };
         startup();
     }, [loadLocalSettings, handleLogout]);

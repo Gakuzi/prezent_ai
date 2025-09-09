@@ -1,10 +1,7 @@
-
-
-
 // FIX: Import 'useEffect' from 'react' to resolve the 'Cannot find name' error.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ApiKey, AppSettings } from '../types';
-import { checkApiKey } from '../services/geminiService';
+import { checkApiKey, healthCheckAllKeys, getKeyPoolState } from '../services/geminiService';
 import { RefreshIcon, PinIcon, PinOffIcon, XCircleIcon, CheckCircleIcon, WarningIcon, MenuIcon, ExternalLinkIcon, ClockIcon } from './icons';
 
 interface ApiKeyManagerProps {
@@ -136,8 +133,18 @@ const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange, setti
         })));
     };
 
-    const handleCheckAllKeys = () => {
-        keys.forEach(key => handleCheckKey(key.value));
+    const handleCheckAllKeys = async () => {
+        const allKeys = keys.map(k => k.value);
+        const checkingState: Record<string, boolean> = {};
+        allKeys.forEach(v => { checkingState[v] = true; });
+        setCheckingStatus(checkingState);
+
+        await healthCheckAllKeys();
+        
+        const updatedPoolState = getKeyPoolState();
+        onKeysChange(updatedPoolState);
+        
+        setCheckingStatus({});
     };
 
     const handleDragStart = (e: React.DragEvent<HTMLDivElement>, index: number) => {
