@@ -1,15 +1,4 @@
 
-
-
-
-
-
-
-
-
-
-
-
 // FIX: Added 'ExifData' to the import list from '../types'.
 import { UploadedImage, ChatMessage, Slide, ApiKey, AppSettings, ExifData } from '../types';
 import logger from './logger';
@@ -109,11 +98,9 @@ const makeGoogleApiCall = async (
     method: 'POST' | 'GET' = 'POST'
 ): Promise<any> => {
     
-    const keysWithUpdatedStatus = JSON.parse(JSON.stringify(keyPool)) as ApiKey[];
-
-    const getOrderedKeys = () => {
-        const pinnedKey = keysWithUpdatedStatus.find(k => k.isPinned);
-        const otherKeys = keysWithUpdatedStatus.filter(k => !k.isPinned);
+    const getOrderedKeys = (): ApiKey[] => {
+        const pinnedKey = keyPool.find(k => k.isPinned);
+        const otherKeys = keyPool.filter(k => !k.isPinned);
         return pinnedKey ? [pinnedKey, ...otherKeys] : otherKeys;
     };
     
@@ -128,8 +115,8 @@ const makeGoogleApiCall = async (
     
     if (keysAvailableAtStart.length === 0 && allKeysInOrder.length > 0) {
         const message = 'No API keys available for use. All keys are either on cooldown, invalid, or have a persistent error status.';
-        logger.logError(message, { apiResponse: { failedKeys: keysWithUpdatedStatus } });
-        throw new AllKeysFailedError(message, keysWithUpdatedStatus);
+        logger.logError(message, { apiResponse: { failedKeys: keyPool } });
+        throw new AllKeysFailedError(message, JSON.parse(JSON.stringify(keyPool)));
     }
     
     for (const keyState of allKeysInOrder) {
@@ -138,7 +125,8 @@ const makeGoogleApiCall = async (
 
         const currentKey = keyState.value;
         const maskedKey = `...${currentKey.slice(-4)}`;
-        const keyToUpdate = keysWithUpdatedStatus.find(k => k.value === currentKey)!;
+        // FIX: Find the key to update directly in the module-level keyPool.
+        const keyToUpdate = keyPool.find(k => k.value === currentKey)!;
         const startTime = Date.now();
 
         try {
@@ -227,8 +215,10 @@ const makeGoogleApiCall = async (
     }
 
     const finalMessage = "All available API keys failed.";
-    logger.logError(finalMessage, { apiResponse: { failedKeys: keysWithUpdatedStatus } });
-    throw new AllKeysFailedError(finalMessage, keysWithUpdatedStatus);
+    // FIX: Pass a fresh copy of the *updated* keyPool to the UI.
+    const finalKeyState = JSON.parse(JSON.stringify(keyPool));
+    logger.logError(finalMessage, { apiResponse: { failedKeys: finalKeyState } });
+    throw new AllKeysFailedError(finalMessage, finalKeyState);
 };
 
 const performSelfCheck = async (model: string, endpoint: string): Promise<void> => {
@@ -408,7 +398,7 @@ ${currentStoryboard}
 ${history}
 
 ЗАДАЧА:
-Проанализируй последнее сообщение пользователя и ВНЕСИ ИЗМЕНЕНИЯ в JSON-сценарий.
+Проанализируй последнее сообщение пользователя и ВНЕСИ ИЗМЕНЕНЕИЯ в JSON-сценарий.
 Твой ответ должен быть ТОЛЬКО обновленным JSON-массивом слайдов. Без комментариев.`;
 
     const payload = {
