@@ -1,5 +1,3 @@
-
-
 // FIX: Added 'ExifData' to the import list from '../types'.
 import { UploadedImage, ChatMessage, Slide, ApiKey, AppSettings, ExifData } from '../types';
 import logger from './logger';
@@ -218,8 +216,10 @@ const makeGoogleApiCall = async (
             logger.logInfo(`Attempting API call with key ${maskedKey}`, { 
                 maskedKey, model, endpoint, requestPayload: payload 
             });
-
-            const modelPath = model.startsWith('gemini') ? `models/${model}` : model;
+            
+            // FIX: Always prefix the model with 'models/' for the REST API path.
+            // This corrects the URL for non-gemini models like 'imagen' or 'veo'.
+            const modelPath = `models/${model}`;
             const url = `https://${endpoint}/${modelPath}:${payload.hasOwnProperty('prompt') ? 'generateImages' : 'generateContent'}?key=${currentKey}`;
             const options: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
             if (method === 'POST') options.body = JSON.stringify(payload);
@@ -541,7 +541,9 @@ export const checkApiKey = async (key: string, model: string, endpoint: string):
     const startTime = Date.now();
     logger.logInfo(`Checking API key ${maskedKey}`, { maskedKey, model, endpoint, requestPayload: payload });
     try {
-        const modelPath = model.startsWith('gemini') ? `models/${model}` : model;
+        // FIX: Always prefix the model with 'models/' for the REST API path.
+        // This ensures health checks work for any valid model type, not just 'gemini*'.
+        const modelPath = `models/${model}`;
         const url = `https://${endpoint}/${modelPath}:generateContent?key=${key}`;
         const response = await fetch(url, {
             method: 'POST',
