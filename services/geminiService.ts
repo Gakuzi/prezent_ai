@@ -1,4 +1,5 @@
 
+
 // FIX: Added 'ExifData' to the import list from '../types'.
 import { UploadedImage, ChatMessage, Slide, ApiKey, AppSettings, ExifData } from '../types';
 import logger from './logger';
@@ -90,6 +91,70 @@ export class ConfigError extends Error {
   }
 }
 
+/**
+ * Resets the status of all 'exhausted' keys to 'active'.
+ * This is a recovery mechanism to try again if quotas have reset.
+ */
+export const resetExhaustedKeys = (): void => {
+    let keysReset = 0;
+    keyPool.forEach(key => {
+        if (key.status === 'exhausted') {
+            key.status = 'active';
+            key.resetTime = undefined;
+            key.lastError = undefined;
+            keysReset++;
+        }
+    });
+
+    if (keysReset > 0) {
+        const now = Date.now();
+        const availableCount = keyPool.filter(k => k.status === 'active' && (!k.resetTime || k.resetTime <= now)).length;
+        logger.logInfo(`[Recovery] Reset ${keysReset} exhausted key statuses. Available keys: ${availableCount}`);
+    }
+};
+
+/**
+ * Performs a health check on all keys in the pool to get their current status.
+ * This runs on app startup to ensure the state is fresh.
+ */
+export const performInitialHealthCheck = async (): Promise<void> => {
+    if (keyPool.length === 0) return;
+
+    logger.logInfo("Performing initial health check for all keys...");
+    
+    await Promise.all(keyPool.map(async (key) => {
+        try {
+            // Assuming default model/endpoint is set correctly for this check
+            const model = keyPool.find(k=>k.isPinned)?.projectId || 'gemini-2.5-flash';
+            const endpoint = keyPool.find(k=>k.isPinned)?.projectId || 'generativelanguage.googleapis.com/v1beta';
+            
+            const status = await checkApiKey(key.value, model, endpoint);
+            const keyToUpdate = keyPool.find(k => k.value === key.value);
+            if (keyToUpdate) {
+                keyToUpdate.status = status;
+                keyToUpdate.lastChecked = Date.now();
+                if (status === 'exhausted') {
+                    keyToUpdate.resetTime = Date.now() + KEY_COOLDOWN_PERIOD;
+                } else if (status === 'active') {
+                    keyToUpdate.resetTime = undefined;
+                    keyToUpdate.lastError = undefined;
+                }
+            }
+        } catch (error) {
+            const keyToUpdate = keyPool.find(k => k.value === key.value);
+            if (keyToUpdate) {
+                keyToUpdate.status = 'unknown';
+                keyToUpdate.lastError = error instanceof Error ? error.message : String(error);
+            }
+        }
+    }));
+    
+    const now = Date.now();
+    const availableCount = keyPool.filter(k => k.status === 'active' && (!k.resetTime || k.resetTime <= now)).length;
+    logger.logSuccess(`Initial health check for all keys completed. Available keys: ${availableCount}`);
+};
+
+
 // --- Core API Call Logic with Key Rotation ---
 const makeGoogleApiCall = async (
     model: string,
@@ -107,21 +172,29 @@ const makeGoogleApiCall = async (
     const now = Date.now();
     const allKeysInOrder = getOrderedKeys();
 
-    const keysAvailableAtStart = allKeysInOrder.filter(k => {
+    const getAvailableKeys = () => allKeysInOrder.filter(k => {
         const isBadStatus = k.status === 'invalid' || k.status === 'config_error' || k.status === 'unknown';
         const isOnCooldown = k.resetTime && k.resetTime > now;
         return !isBadStatus && !isOnCooldown;
     });
+
+    let keysAvailableAtStart = getAvailableKeys();
     
     if (keysAvailableAtStart.length === 0 && allKeysInOrder.length > 0) {
-        const message = 'No API keys available for use. All keys are either on cooldown, invalid, or have a persistent error status.';
-        logger.logError(message, { apiResponse: { failedKeys: keyPool } });
-        throw new AllKeysFailedError(message, JSON.parse(JSON.stringify(keyPool)));
+        logger.logWarning("No keys immediately available. Attempting to reset exhausted keys as a recovery measure.");
+        resetExhaustedKeys();
+        keysAvailableAtStart = getAvailableKeys(); // Re-evaluate after reset
+
+        if (keysAvailableAtStart.length === 0) {
+            const message = 'No functional API keys available. All keys are either in an error state or remained exhausted after a reset attempt.';
+            logger.logError(message, { apiResponse: { failedKeys: keyPool } });
+            throw new AllKeysFailedError(message, JSON.parse(JSON.stringify(keyPool)));
+        }
     }
     
     for (const keyState of allKeysInOrder) {
         if (keyState.status === 'invalid' || keyState.status === 'config_error' || keyState.status === 'unknown') continue;
-        if (keyState.resetTime && keyState.resetTime > now) continue;
+        if (keyState.resetTime && keyState.resetTime > Date.now()) continue;
 
         const currentKey = keyState.value;
         const maskedKey = `...${currentKey.slice(-4)}`;

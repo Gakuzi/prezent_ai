@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UploadedImage, ChatMessage, Slide, AnalysisProgress, ExportFormat, VoiceSettings, ApiKey, GithubUser, AppSettings, SyncStatus, LogEntry } from './types';
 import * as gemini from './services/geminiService';
@@ -217,6 +218,9 @@ const AppContent: React.FC = () => {
                  logger.logInfo('No GitHub token found. Awaiting user login.');
             }
             setInitState('ready');
+            // Perform a health check on all keys after initial settings are loaded.
+            // This runs in the background and doesn't block the UI.
+            gemini.performInitialHealthCheck();
         };
         startup();
     }, [loadLocalSettings, handleLogout]);
