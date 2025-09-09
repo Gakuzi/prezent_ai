@@ -1,4 +1,5 @@
 
+
 // FIX: Added 'ExifData' to the import list from '../types'.
 import { UploadedImage, ChatMessage, Slide, ApiKey, AppSettings, ExifData } from '../types';
 import logger from './logger';
@@ -113,6 +114,24 @@ export const resetExhaustedKeys = (): void => {
 };
 
 /**
+ * Forces all API keys in the pool back to an 'active' state.
+ * This is a powerful recovery mechanism to retry all keys, ignoring previous errors.
+ */
+export const forceResetAllKeys = (): ApiKey[] => {
+    logger.logWarning("[Recovery] Forcing all API keys to 'active' status.");
+    keyPool.forEach(key => {
+        key.status = 'active';
+        key.lastError = undefined;
+        key.resetTime = undefined;
+        key.lastChecked = undefined;
+    });
+    
+    logger.logSuccess(`Force reset complete. All ${keyPool.length} keys set to 'active'.`);
+    
+    return getKeyPoolState();
+};
+
+/**
  * Performs a health check on all keys in the pool to get their current status.
  * This runs on app startup to ensure the state is fresh.
  */
@@ -181,7 +200,7 @@ const makeGoogleApiCall = async (
     const keysAvailableAtStart = getAvailableKeys();
     
     if (keysAvailableAtStart.length === 0 && allKeysInOrder.length > 0) {
-        const message = 'No functional API keys available. All keys are either in an error state or on cooldown.';
+        const message = 'Нет доступных API-ключей. Все ключи были проверены и помечены как исчерпанные или неработающие. Попробуйте принудительно сбросить ключи в настройках или добавить новые.';
         logger.logError(message, { apiResponse: { failedKeys: keyPool } });
         throw new AllKeysFailedError(message, JSON.parse(JSON.stringify(keyPool)));
     }
@@ -277,7 +296,7 @@ const makeGoogleApiCall = async (
         }
     }
 
-    const finalMessage = "All available API keys failed.";
+    const finalMessage = "Не удалось выполнить запрос. Все доступные ключи вернули ошибку. Проверьте статус ключей в настройках или попробуйте принудительно сбросить их состояние.";
     const finalKeyState = JSON.parse(JSON.stringify(keyPool));
     logger.logError(finalMessage, { apiResponse: { failedKeys: finalKeyState } });
     throw new AllKeysFailedError(finalMessage, finalKeyState);

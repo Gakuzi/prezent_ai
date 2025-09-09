@@ -1,7 +1,7 @@
 // FIX: Import 'useEffect' from 'react' to resolve the 'Cannot find name' error.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ApiKey, AppSettings } from '../types';
-import { checkApiKey, healthCheckAllKeys, getKeyPoolState } from '../services/geminiService';
+import { checkApiKey, healthCheckAllKeys, getKeyPoolState, forceResetAllKeys } from '../services/geminiService';
 import { RefreshIcon, PinIcon, PinOffIcon, XCircleIcon, CheckCircleIcon, WarningIcon, MenuIcon, ExternalLinkIcon, ClockIcon } from './icons';
 
 interface ApiKeyManagerProps {
@@ -147,6 +147,11 @@ const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange, setti
         setCheckingStatus({});
     };
 
+    const handleForceReset = () => {
+        const updatedKeys = forceResetAllKeys();
+        onKeysChange(updatedKeys);
+    };
+
     const handleDragStart = (e: React.DragEvent<HTMLDivElement>, index: number) => {
         dragKey.current = index;
         e.dataTransfer.effectAllowed = 'move';
@@ -285,13 +290,21 @@ const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange, setti
                 )}
             </div>
             
-            <div className="flex justify-start pt-4 border-t border-gray-700">
+            <div className="flex justify-between items-center pt-4 border-t border-gray-700">
                  <button
                     onClick={handleCheckAllKeys}
                     className="text-sm text-indigo-400 hover:underline disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
                     disabled={Object.values(checkingStatus).some(Boolean)}
                 >
                     Проверить все ключи
+                </button>
+                 <button
+                    onClick={handleForceReset}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-yellow-300 bg-yellow-900/50 border border-yellow-700 rounded-md hover:bg-yellow-800/50"
+                    title="Сбрасывает локальный статус всех ключей на 'active', чтобы попробовать их использовать снова. Полезно, если вы уверены, что лимиты на стороне Google уже сброшены."
+                >
+                    <WarningIcon className="w-4 h-4" />
+                    Принудительный сброс
                 </button>
             </div>
             <style>{`
