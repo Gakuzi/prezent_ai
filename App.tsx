@@ -143,7 +143,6 @@ const App: React.FC = () => {
     const handleSettingsChange = useCallback((newSettings: AppSettings) => {
         setSettings(newSettings);
         
-        // Also update local storage as a fallback
         localStorage.setItem('apiKeys', JSON.stringify(newSettings.apiKeys));
         localStorage.setItem('voiceSettings', JSON.stringify(newSettings.voiceSettings));
         localStorage.setItem('pexelsApiKey', newSettings.pexelsApiKey || '');
@@ -176,7 +175,7 @@ const App: React.FC = () => {
                     if (e instanceof github.GitHubAuthError) {
                         handleLogout();
                     } else {
-                        setAuthState('authenticated'); // Stay authenticated, but show sync error
+                        setAuthState('authenticated');
                         setSettings(loadLocalSettings());
                         setSyncStatus('error');
                     }
@@ -196,14 +195,11 @@ const App: React.FC = () => {
             return;
         }
 
-        if (syncTimeoutRef.current) {
-            clearTimeout(syncTimeoutRef.current);
-        }
+        if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
 
         setSyncStatus('syncing');
         syncTimeoutRef.current = setTimeout(async () => {
             try {
-                // Use settingsRef to ensure the latest state is saved
                 const newGistId = await github.saveSettings(githubPat, settingsRef.current, gistId);
                 if (newGistId !== gistId) setGistId(newGistId);
                 setSyncStatus('success');
@@ -213,21 +209,17 @@ const App: React.FC = () => {
             }
         }, 2000); // 2-second debounce
 
-        return () => {
-            if (syncTimeoutRef.current) {
-                clearTimeout(syncTimeoutRef.current);
-            }
-        };
+        return () => { if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current); };
     }, [settings, githubPat, gistId, authState]);
 
     // Effect to update services when settings change
     useEffect(() => {
-        gemini.initializeApiKeys(settings.apiKeys, (updatedKeys) => {
-            handleSettingsChange({ ...settings, apiKeys: [...updatedKeys] });
-        });
+        // Crucial: Sync API keys from UI state to the Gemini service.
+        gemini.initializeApiKeys(settings.apiKeys);
         imageSearchService.initializePexels(settings.pexelsApiKey);
-
-        if (settings.apiKeys.length === 0 && authState === 'authenticated' && appState !== 'concept' && appState !== 'error') {
+        
+        const hasGeminiKeys = settings.apiKeys.length > 0;
+        if (!hasGeminiKeys && authState === 'authenticated' && appState !== 'concept' && appState !== 'error') {
              setIsApiKeyMissing(true);
         } else {
              setIsApiKeyMissing(false);
@@ -252,7 +244,7 @@ const App: React.FC = () => {
             }
         };
         setupVoice();
-    }, [settings, handleSettingsChange, authState, appState]);
+    }, [settings.apiKeys, settings.pexelsApiKey, settings.voiceSettings, handleSettingsChange, authState, appState]);
 
 
     const onApiLog = useCallback((log: Omit<ApiCallLog, 'timestamp'>) => {
@@ -263,7 +255,7 @@ const App: React.FC = () => {
         console.error("handleError called with:", e);
         
         if (e instanceof gemini.AllKeysFailedError) {
-            setFailedKeys(e.failedKeys);
+            setFailedKeys(e.failedKeys); 
             setIsQuotaErrorModalOpen(true);
             setRetryAction(() => onRetry);
             return;
@@ -535,7 +527,6 @@ const App: React.FC = () => {
                 handleSettingsChange(result.settings);
                 setGistId(result.gistId);
             } else {
-                // If no gist is found, we sync the current local settings immediately
                 const localSettings = loadLocalSettings();
                 handleSettingsChange(localSettings);
                 const newGistId = await github.saveSettings(pat, localSettings, null);
@@ -682,9 +673,7 @@ const App: React.FC = () => {
 
     const handleCloseVideoOverlay = () => {
         const url = videoProgress.url;
-        if (url) {
-            URL.revokeObjectURL(url);
-        }
+        if (url) URL.revokeObjectURL(url);
         setVideoGenState('idle');
         setVideoProgress({ message: '', url: null, error: null });
     };
