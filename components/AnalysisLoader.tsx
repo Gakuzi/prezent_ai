@@ -1,50 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadedImage, AnalysisProgress, ApiCallLog } from '../types';
-import { CheckCircleIcon, WarningIcon, XCircleIcon, RefreshIcon } from './icons';
+import { UploadedImage, AnalysisProgress } from '../types';
+import { CheckCircleIcon, RefreshIcon } from './icons';
 import Loader from './Loader';
-
-const maskKey = (key: string) => {
-    if (key.length < 8) return '****';
-    if (key === 'system') return 'Система';
-    return `...${key.slice(-4)}`;
-};
-
-const ApiStatusLine: React.FC<{ log?: ApiCallLog }> = ({ log }) => {
-    if (!log) return null;
-
-    const getStatusIcon = (status: ApiCallLog['status']) => {
-        switch(status) {
-            case 'attempting': return <RefreshIcon className="w-4 h-4 text-blue-400 animate-spin" />;
-            case 'success': return <CheckCircleIcon className="w-4 h-4 text-green-400" />;
-            case 'failed': return <XCircleIcon className="w-4 h-4 text-red-400" />;
-            case 'info': return <WarningIcon className="w-4 h-4 text-gray-400" />;
-            default: return null;
-        }
-    };
-
-    return (
-        <div className="absolute bottom-0 left-0 right-0 h-10 bg-black/70 backdrop-blur-sm p-2 flex items-center justify-between font-mono text-xs text-gray-300">
-            <div className="flex items-center gap-3 overflow-hidden">
-                <span className="text-gray-500">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                    {getStatusIcon(log.status)}
-                    <span className="font-bold text-indigo-300">[{maskKey(log.key)}]</span>
-                </div>
-                <span className="flex-1 whitespace-nowrap overflow-hidden text-ellipsis">{log.message}</span>
-            </div>
-        </div>
-    );
-};
 
 interface AnalysisLoaderProps {
   images: UploadedImage[];
   allImages: UploadedImage[];
   progress: AnalysisProgress;
-  lastApiLog?: ApiCallLog;
   evolvingStorySummary: string;
 }
 
-const AnalysisLoader: React.FC<AnalysisLoaderProps> = ({ images, allImages, progress, lastApiLog, evolvingStorySummary }) => {
+const AnalysisLoader: React.FC<AnalysisLoaderProps> = ({ images, allImages, progress, evolvingStorySummary }) => {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const activeThumbnailRef = useRef<HTMLButtonElement>(null);
   
@@ -98,7 +64,6 @@ const AnalysisLoader: React.FC<AnalysisLoaderProps> = ({ images, allImages, prog
                 </div>
               )}
             </div>
-            <ApiStatusLine log={lastApiLog} />
         </div>
 
         {/* Sidebar: Story Plan */}

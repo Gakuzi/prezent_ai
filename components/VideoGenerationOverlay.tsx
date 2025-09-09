@@ -1,3 +1,4 @@
+
 import React, { useRef, useEffect, useState } from 'react';
 import { CloseIcon, DownloadIcon, CastIcon } from './icons';
 
@@ -32,7 +33,7 @@ const VideoGenerationOverlay: React.FC<VideoGenerationOverlayProps> = ({ state, 
 
 
   return (
-    <div className="fixed inset-0 bg-gray-900/80 backdrop-blur-md z-50 flex items-center justify-center p-8 text-white">
+    <div className="fixed top-0 left-0 right-0 bottom-[50px] bg-gray-900/80 backdrop-blur-md z-50 flex items-center justify-center p-8 text-white">
       <div className="text-center bg-gray-800/50 p-8 rounded-2xl shadow-2xl border border-gray-700 max-w-lg w-full">
         {state === 'generating' && (
           <>

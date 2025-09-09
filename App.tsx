@@ -1,12 +1,14 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { UploadedImage, ChatMessage, Slide, AnalysisProgress, ExportFormat, VoiceSettings, ApiKey, GithubUser, ApiCallLog, AppSettings, SyncStatus } from './types';
+import { UploadedImage, ChatMessage, Slide, AnalysisProgress, ExportFormat, VoiceSettings, ApiKey, GithubUser, AppSettings, SyncStatus, LogEntry } from './types';
 import * as gemini from './services/geminiService';
 import * as location from './services/locationService';
 import * as github from './services/githubService';
 import * as imageSearchService from './services/imageSearchService';
 import { parseSlidesFromJson } from './utils/planParser';
 import { exportToPdf, exportToPptx, exportToHtml } from './services/exportService';
+import { LoggerProvider, useLogger } from './context/LoggerContext'; 
+import logger from './services/logger';
 
 import Header from './components/Header';
 import ConceptInput from './components/ConceptInput';
@@ -26,11 +28,17 @@ import ErrorState from './components/ErrorState';
 import Loader from './components/Loader';
 import ImagePickerModal from './components/ImagePickerModal';
 import QuotaErrorModal from './components/QuotaErrorModal';
+import ConfigErrorModal from './components/ConfigErrorModal';
+import StatusBar from './components/StatusBar';
+import LogViewerModal from './components/LogViewerModal';
+import ErrorDetailModal from './components/ErrorDetailModal';
+
 
 type AppState = 'concept' | 'generating_plan' | 'upload' | 'analyzing' | 'chat' | 'presentation' | 'error';
 type VideoGenState = 'idle' | 'generating' | 'success' | 'error';
 type AuthState = 'unauthenticated' | 'authenticated' | null;
 type InitState = 'initializing' | 'ready';
+type SettingsTab = 'api' | 'voice' | 'integrations' | 'account';
 
 interface AnalysisCursor {
     imagesToAnalyze: UploadedImage[];
@@ -47,18 +55,33 @@ const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
 const DEFAULT_SETTINGS: AppSettings = {
     apiKeys: [],
     voiceSettings: DEFAULT_VOICE_SETTINGS,
-    pexelsApiKey: null
+    pexelsApiKey: null,
+    // FIX: Updated the model to 'gemini-2.5-flash' as per the guidelines. 'gemini-1.5-flash' is prohibited.
+    geminiModel: 'gemini-2.5-flash',
+    geminiEndpoint: 'generativelanguage.googleapis.com/v1beta',
 };
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
+    const { 
+        logs, 
+        clearLogs, 
+        detailedLog, 
+        setDetailedLog, 
+        detailedError, 
+        setDetailedError 
+    } = useLogger();
+
     const [initState, setInitState] = useState<InitState>('initializing');
     const [showSplash, setShowSplash] = useState(true);
     const [appState, setAppState] = useState<AppState>('concept');
     const [error, setError] = useState<string | null>(null);
     const [isApiKeyMissing, setIsApiKeyMissing] = useState(false);
     const [isQuotaErrorModalOpen, setIsQuotaErrorModalOpen] = useState(false);
+    const [isConfigErrorModalOpen, setIsConfigErrorModalOpen] = useState(false);
+    const [configErrorDetails, setConfigErrorDetails] = useState({ model: '', endpoint: '' });
     const [failedKeys, setFailedKeys] = useState<ApiKey[]>([]);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('api');
     const [retryAction, setRetryAction] = useState<(() => Promise<void> | void) | null>(null);
     
     const [presentationConcept, setPresentationConcept] = useState<string>('');
@@ -77,7 +100,6 @@ const App: React.FC = () => {
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
     const [isTyping, setIsTyping] = useState(false);
     const [slides, setSlides] = useState<Slide[]>([]);
-    const [apiCallLogs, setApiCallLogs] = useState<ApiCallLog[]>([]);
 
     const [isExporting, setIsExporting] = useState(false);
     
@@ -104,27 +126,24 @@ const App: React.FC = () => {
     const [gistId, setGistId] = useState<string | null>(null);
     const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
     const isInitialMount = useRef(true);
-    const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
+
+    const openSettingsPanel = (tab: SettingsTab = 'api') => {
+        setSettingsInitialTab(tab);
+        setIsSettingsOpen(true);
+    };
 
     const loadLocalSettings = useCallback((): AppSettings => {
-        const localSettings: AppSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+        const localSettings = { ...DEFAULT_SETTINGS };
         try {
-            const storedKeys = localStorage.getItem('apiKeys');
-            if (storedKeys) localSettings.apiKeys = JSON.parse(storedKeys);
-            
-            const storedVoice = localStorage.getItem('voiceSettings');
-            if (storedVoice) {
-                const parsedVoice = JSON.parse(storedVoice);
-                 if (parsedVoice.hasOwnProperty('voiceURI')) { 
-                    localSettings.voiceSettings = { ...DEFAULT_VOICE_SETTINGS, voices: [parsedVoice] };
-                } else { 
-                    localSettings.voiceSettings = { ...DEFAULT_VOICE_SETTINGS, ...parsedVoice };
-                }
+            const stored = localStorage.getItem('appSettings');
+            if(stored) {
+                const parsed = JSON.parse(stored);
+                // Merge parsed settings with defaults to ensure all keys are present
+                return { ...DEFAULT_SETTINGS, ...parsed };
             }
-
-            const storedPexels = localStorage.getItem('pexelsApiKey');
-            if (storedPexels) localSettings.pexelsApiKey = storedPexels;
         } catch (e) {
             console.error("Failed to parse local settings:", e);
         }
@@ -137,9 +156,7 @@ const App: React.FC = () => {
     
     useEffect(() => {
         try {
-            localStorage.setItem('apiKeys', JSON.stringify(settings.apiKeys));
-            localStorage.setItem('voiceSettings', JSON.stringify(settings.voiceSettings));
-            localStorage.setItem('pexelsApiKey', settings.pexelsApiKey || '');
+            localStorage.setItem('appSettings', JSON.stringify(settings));
         } catch (e) {
             console.error("Failed to save settings to localStorage:", e);
         }
@@ -157,39 +174,47 @@ const App: React.FC = () => {
     
     useEffect(() => {
         const startup = async () => {
+            logger.logInfo('Application initializing...');
             const pat = localStorage.getItem('githubPat');
             if (pat) {
                 try {
                     setSyncStatus('syncing');
+                    logger.logInfo('Found GitHub token, attempting to authenticate...');
                     const user = await github.getUser(pat);
                     setGithubPat(pat);
                     setGithubUser(user);
 
+                    logger.logInfo(`Authenticated as ${user.login}. Fetching settings from Gist...`);
                     const result = await github.getSettingsFromGist(pat);
                     if (result) {
-                        setSettings(result.settings);
+                        setSettings({ ...DEFAULT_SETTINGS, ...result.settings });
                         setGistId(result.gistId);
                         setSyncStatus('success');
+                         logger.logSuccess('Settings loaded from GitHub Gist.');
                     } else {
                         setSettings(loadLocalSettings());
                         setSyncStatus('idle');
+                        logger.logInfo('No settings Gist found, using local settings.');
                     }
                     setAuthState('authenticated');
                     setShowSplash(false); 
                 } catch (e) {
                     console.error("GitHub auth/fetch error. Using local settings.", e);
                     if (e instanceof github.GitHubAuthError) {
+                        logger.logError('GitHub authentication failed. Logging out.');
                         handleLogout();
                     } else {
                         setAuthState('authenticated');
                         setShowSplash(false);
                         setSettings(loadLocalSettings());
                         setSyncStatus('error');
+                        logger.logError('Failed to fetch settings from Gist, using local settings.');
                     }
                 }
             } else {
                 setSettings(loadLocalSettings());
                 setAuthState('unauthenticated');
+                 logger.logInfo('No GitHub token found. Awaiting user login.');
             }
             setInitState('ready');
         };
@@ -207,12 +232,15 @@ const App: React.FC = () => {
         setSyncStatus('syncing');
         syncTimeoutRef.current = setTimeout(async () => {
             try {
+                logger.logInfo('Auto-syncing settings to GitHub Gist...');
                 const newGistId = await github.saveSettings(githubPat, settingsRef.current, gistId);
                 if (newGistId !== gistId) setGistId(newGistId);
                 setSyncStatus('success');
+                logger.logSuccess('Settings synchronized successfully.');
             } catch (e) {
                 console.error("Auto-sync failed:", e);
                 setSyncStatus('error');
+                logger.logError(`Auto-sync failed: ${e instanceof Error ? e.message : String(e)}`);
             }
         }, 2000);
 
@@ -234,13 +262,13 @@ const App: React.FC = () => {
             const setBestDefaultVoice = () => {
                 const availableVoices = window.speechSynthesis.getVoices();
                 if (availableVoices.length === 0) return false;
-                if (localStorage.getItem('voiceSettings') && settings.voiceSettings.voices[0]?.voiceURI) return true;
+                if (localStorage.getItem('appSettings') && settings.voiceSettings.voices[0]?.voiceURI) return true;
 
                 const russianVoices = availableVoices.filter(v => v.lang.startsWith('ru'));
                 if (russianVoices.length > 0) {
                     const bestVoice = russianVoices.find(v => v.name.includes('Google') || v.name.includes('Milena')) || russianVoices[0];
-                    const defaultSettings = { ...settings.voiceSettings, voices: [{ voiceURI: bestVoice.voiceURI, rate: 1, pitch: 1 }] };
-                    handleSettingsChange({...settings, voiceSettings: defaultSettings});
+                    const defaultVoiceSettings = { ...settings.voiceSettings, voices: [{ voiceURI: bestVoice.voiceURI, rate: 1, pitch: 1 }] };
+                    handleSettingsChange({...settings, voiceSettings: defaultVoiceSettings});
                 }
                 return true;
             };
@@ -251,13 +279,15 @@ const App: React.FC = () => {
         setupVoice();
     }, [settings.apiKeys, settings.pexelsApiKey, settings.voiceSettings, handleSettingsChange, authState, appState]);
 
-
-    const onApiLog = useCallback((log: Omit<ApiCallLog, 'timestamp'>) => {
-        setApiCallLogs(prev => [...prev.slice(-20), { ...log, timestamp: Date.now() }]);
-    }, []);
-
     const handleError = (e: any, onRetry: (() => Promise<void> | void) | null = null) => {
-        console.error("handleError called with:", e);
+        const message = e instanceof Error ? e.message : String(e);
+        
+        if (e instanceof gemini.ConfigError) {
+            setConfigErrorDetails({ model: e.model, endpoint: e.endpoint });
+            setIsConfigErrorModalOpen(true);
+            if (onRetry) setRetryAction(() => onRetry);
+            return;
+        }
         
         if (e instanceof gemini.AllKeysFailedError) {
             const updatedKeysFromError = e.failedKeys;
@@ -273,7 +303,6 @@ const App: React.FC = () => {
             return;
         }
         
-        const message = e instanceof Error ? e.message : String(e);
         setError(message);
         setAppState('error');
         if (onRetry) setRetryAction(() => onRetry);
@@ -281,6 +310,7 @@ const App: React.FC = () => {
 
     const handleLogin = useCallback(async (pat: string): Promise<boolean> => {
         try {
+            logger.logInfo('Attempting GitHub login...');
             const user = await github.getUser(pat);
             localStorage.setItem('githubPat', pat);
             setGithubPat(pat);
@@ -289,19 +319,23 @@ const App: React.FC = () => {
             setSyncStatus('syncing');
             const result = await github.getSettingsFromGist(pat);
             if (result) {
-                setSettings(result.settings);
+                setSettings({ ...DEFAULT_SETTINGS, ...result.settings });
                 setGistId(result.gistId);
                 setSyncStatus('success');
+                 logger.logSuccess(`Login successful. Settings loaded for ${user.login}.`);
             } else {
                 const localSettings = loadLocalSettings();
                 setSettings(localSettings);
                 setSyncStatus('idle'); 
+                 logger.logSuccess(`Login successful. Using local settings for ${user.login}.`);
             }
 
             setAuthState('authenticated');
             setShowSplash(false);
             return true;
         } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            logger.logError(`Login failed: ${message}`);
             console.error("Login attempt failed:", e);
             localStorage.removeItem('githubPat');
             return false;
@@ -309,6 +343,7 @@ const App: React.FC = () => {
     }, [loadLocalSettings]);
     
     const resetState = useCallback(() => {
+        logger.logInfo('Resetting application state.');
         setAppState('concept');
         setError(null);
         setPresentationConcept('');
@@ -319,16 +354,16 @@ const App: React.FC = () => {
         setEvolvingStorySummary('');
         setChatMessages([]);
         setSlides([]);
-        setApiCallLogs([]);
         setRetryAction(null);
         setIsQuotaErrorModalOpen(false);
+        setIsConfigErrorModalOpen(false);
     }, []);
 
     const handleConceptSubmit = async (concept: string) => {
         setPresentationConcept(concept);
         setAppState('generating_plan');
         try {
-            const response = await gemini.createInitialPlan(concept, onApiLog);
+            const response = await gemini.createInitialPlan(concept, settingsRef.current);
             setInitialStoryPlan(response.text);
             setAppState('upload');
         } catch (e) {
@@ -337,6 +372,7 @@ const App: React.FC = () => {
     };
     
     const handleUpload = async (images: UploadedImage[]) => {
+        logger.logInfo(`Uploading ${images.length} images. Fetching location data...`);
         const imagesWithLocation = await Promise.all(images.map(async img => {
             if (img.exif?.latitude && img.exif?.longitude) {
                 const locationDescription = await location.findLocationDetails(img.exif.latitude, img.exif.longitude);
@@ -350,12 +386,14 @@ const App: React.FC = () => {
     };
 
     const startAnalysis = (imagesToAnalyze: UploadedImage[]) => {
+        logger.logInfo(`Starting analysis of ${imagesToAnalyze.length} images.`);
         setAnalysisCursor({ imagesToAnalyze, currentIndex: 0, status: 'running' });
         setAnalysisProgress({ total: imagesToAnalyze.length + 1, currentIndex: 0, currentAction: 'Начинаю анализ...', matrixText: '', isSynthesizing: false });
         setEvolvingStorySummary('');
     };
 
     const resumeAnalysis = useCallback(() => {
+        logger.logInfo('Resuming image analysis...');
         setAnalysisCursor(prev => ({ ...prev, status: 'running' }));
     }, []);
 
@@ -367,7 +405,7 @@ const App: React.FC = () => {
             const previousImages = allUploadedImagesRef.current.filter(img => img.description);
             try {
                 setAnalysisProgress(prev => ({ ...prev, currentAction: `Анализирую изображение ${prev.currentIndex + 1}...`, currentIndex: prev.currentIndex + 1 }));
-                const { imageDescription, updatedStory } = await gemini.analyzeNextFrame(currentImage, previousImages, evolvingStorySummary, onApiLog);
+                const { imageDescription, updatedStory } = await gemini.analyzeNextFrame(currentImage, previousImages, evolvingStorySummary, settingsRef.current);
                 setAllUploadedImages(prev => prev.map(img => img.id === currentImage.id ? { ...img, description: imageDescription } : img));
                 setEvolvingStorySummary(updatedStory);
                 setAnalysisCursor(prev => ({ ...prev, currentIndex: prev.currentIndex + 1 }));
@@ -378,11 +416,14 @@ const App: React.FC = () => {
         };
 
         const synthesizeFinalStory = async () => {
-            const retrySynth = () => setAnalysisCursor(prev => ({...prev, status: 'running' }));
+            const retrySynth = () => {
+                logger.logInfo('Retrying final story synthesis.');
+                setAnalysisCursor(prev => ({...prev, status: 'running' }));
+            }
             try {
                 setAnalysisProgress(prev => ({ ...prev, isSynthesizing: true, currentAction: 'Синтезирую финальный сценарий...', currentIndex: prev.total }));
                 const analyzedImages = allUploadedImagesRef.current.filter(img => img.description);
-                const response = await gemini.generateStoryboard(evolvingStorySummary, analyzedImages, onApiLog);
+                const response = await gemini.generateStoryboard(evolvingStorySummary, analyzedImages, settingsRef.current);
                 const parsedSlides = parseSlidesFromJson(response.text);
                 setSlides(parsedSlides);
                 setAppState('chat');
@@ -398,14 +439,14 @@ const App: React.FC = () => {
         } else {
             processNextImage();
         }
-    }, [analysisCursor, appState, evolvingStorySummary, onApiLog, resumeAnalysis]);
+    }, [analysisCursor, appState, evolvingStorySummary, resumeAnalysis]);
 
     const handleSendMessage = async (message: string) => {
         const userMessage: ChatMessage = { role: 'user', parts: [{ text: message }] };
         setChatMessages(prev => [...prev, userMessage]);
         setIsTyping(true);
         try {
-            const response = await gemini.continueChat([...chatMessages, userMessage], allUploadedImages, slides, onApiLog);
+            const response = await gemini.continueChat([...chatMessages, userMessage], allUploadedImages, slides, settingsRef.current);
             const modelMessage: ChatMessage = { role: 'model', parts: [{ text: response.text }] };
             const updatedSlides = parseSlidesFromJson(response.text);
             setSlides(updatedSlides);
@@ -420,18 +461,21 @@ const App: React.FC = () => {
 
     const handleFinalize = async () => {
         setAppState('presentation');
+        logger.logInfo('Finalizing presentation, suggesting music...');
         try {
-            const response = await gemini.suggestMusic(presentationConcept, slides, onApiLog);
+            const response = await gemini.suggestMusic(presentationConcept, slides, settingsRef.current);
             const suggestions = JSON.parse(response.text);
             if (Array.isArray(suggestions)) {
                 setMusicSuggestions(suggestions);
             }
         } catch (e) {
             console.error("Failed to get music suggestions:", e);
+            logger.logError(`Failed to get music suggestions: ${e instanceof Error ? e.message : String(e)}`);
         }
     };
 
     const handleOpenSearch = (query: string, slideIndex: number) => {
+        logger.logInfo(`Opening image search for query: "${query}"`);
         setSearchQuery(query);
         setActiveSlideForImageAction(slideIndex);
         setIsSearchModalOpen(true);
@@ -440,7 +484,7 @@ const App: React.FC = () => {
     const handleGenerateImage = async (prompt: string, slideIndex: number) => {
         setActiveSlideForImageAction(slideIndex);
         try {
-            const base64Image = await gemini.generateImage(prompt, onApiLog);
+            const base64Image = await gemini.generateImage(prompt);
             const newImage: UploadedImage = {
                 id: crypto.randomUUID(),
                 file: new File([], `${prompt.slice(0, 20)}.png`, { type: 'image/png' }),
@@ -462,6 +506,7 @@ const App: React.FC = () => {
     const handleAddImagesFromSearch = async (imagesToAdd: {url: string, query: string}[]) => {
         if (activeSlideForImageAction === null) return;
         setIsSearchModalOpen(false);
+        logger.logInfo(`Adding ${imagesToAdd.length} image(s) from search.`);
         try {
             const imagePromises = imagesToAdd.map(async (img) => {
                 const response = await fetch(img.url);
@@ -493,6 +538,7 @@ const App: React.FC = () => {
 
     const handleSelectImageFromPicker = (imageId: string) => {
         if (activeSlideForImageAction !== null) {
+            logger.logInfo(`Image for slide ${activeSlideForImageAction + 1} changed.`);
             setSlides(prevSlides => prevSlides.map((slide, index) => 
                 index === activeSlideForImageAction ? { ...slide, imageId, needsImage: false } : slide
             ));
@@ -521,13 +567,13 @@ const App: React.FC = () => {
         setVideoGenState('generating');
         setVideoProgress({ message: 'Отправка запроса на генерацию...', url: null, error: null });
         try {
-            const operation = await gemini.generateVideo(slides, allUploadedImages, style, onApiLog);
+            const operation = await gemini.generateVideo(slides, allUploadedImages, style);
             let videoOp = operation;
             for (let i = 0; i < 30; i++) { // Timeout after ~5 mins
                 if (videoOp.done) break;
                 setVideoProgress(prev => ({ ...prev, message: `Обработка видео... (попытка ${i + 1}/30)` }));
                 await new Promise(resolve => setTimeout(resolve, 10000));
-                videoOp = await gemini.checkVideoStatus(videoOp, onApiLog);
+                videoOp = await gemini.checkVideoStatus(videoOp);
             }
             if (videoOp.done && videoOp.response?.generatedVideos?.[0]?.video?.uri) {
                 const keyToUse = gemini.getCurrentApiKey();
@@ -567,19 +613,19 @@ const App: React.FC = () => {
 
     return (
         <div className="bg-gray-900 text-white min-h-screen p-4 flex flex-col">
-            <Header onRestart={resetState} onOpenSettings={() => setIsSettingsOpen(true)} />
+            <Header onRestart={resetState} onOpenSettings={() => openSettingsPanel()} />
             
-            <main className="flex-grow flex flex-col items-center justify-center">
+            <main className="flex-grow flex flex-col items-center justify-center mb-[60px]"> {/* Add margin-bottom for StatusBar */}
                 {appState === 'concept' && <ConceptInput onConceptSubmit={handleConceptSubmit} />}
                 {appState === 'generating_plan' && <PlanGenerationLoader />}
                 {appState === 'upload' && <ImageUploader initialPlan={initialStoryPlan} onUpload={handleUpload} />}
-                {appState === 'analyzing' && <AnalysisLoader images={analysisCursor.imagesToAnalyze} allImages={allUploadedImages} progress={analysisProgress} lastApiLog={apiCallLogs.length > 0 ? apiCallLogs[apiCallLogs.length - 1] : undefined} evolvingStorySummary={evolvingStorySummary} />}
+                {appState === 'analyzing' && <AnalysisLoader images={analysisCursor.imagesToAnalyze} allImages={allUploadedImages} progress={analysisProgress} evolvingStorySummary={evolvingStorySummary} />}
                 {appState === 'chat' && <ChatWindow slides={slides} allImages={allUploadedImages} onSendMessage={handleSendMessage} onFinalize={handleFinalize} isTyping={isTyping} onSearch={handleOpenSearch} onGenerate={handleGenerateImage} onChangeImage={handleChangeImage} />}
-                {appState === 'presentation' && <PresentationViewer slides={slides} images={allUploadedImages} onExport={handleExport} isExporting={isExporting} onRestart={resetState} onEditScript={() => setAppState('chat')} voiceSettings={settings.voiceSettings} onVoiceSettingsChange={v => handleSettingsChange({...settings, voiceSettings: v})} musicSuggestions={musicSuggestions} onApiLog={onApiLog} />}
-                {appState === 'error' && <ErrorState error={error} onRetry={retryAction!} onOpenSettings={() => setIsSettingsOpen(true)} onRestart={resetState} />}
+                {appState === 'presentation' && <PresentationViewer slides={slides} images={allUploadedImages} onExport={handleExport} isExporting={isExporting} onRestart={resetState} onEditScript={() => setAppState('chat')} voiceSettings={settings.voiceSettings} onVoiceSettingsChange={v => handleSettingsChange({...settings, voiceSettings: v})} musicSuggestions={musicSuggestions} settings={settings} />}
+                {appState === 'error' && <ErrorState error={error} onRetry={retryAction!} onOpenSettings={() => openSettingsPanel('api')} onRestart={resetState} />}
             </main>
 
-            <ApiKeyModal isOpen={isApiKeyMissing} onClose={() => { setIsApiKeyMissing(false); setIsSettingsOpen(true); }} message={null} />
+            <ApiKeyModal isOpen={isApiKeyMissing} onClose={() => { setIsApiKeyMissing(false); openSettingsPanel('api'); }} message={null} />
 
             <QuotaErrorModal
               isOpen={isQuotaErrorModalOpen}
@@ -594,7 +640,7 @@ const App: React.FC = () => {
               }}
               onOpenSettings={() => {
                   setIsQuotaErrorModalOpen(false);
-                  setIsSettingsOpen(true);
+                  openSettingsPanel('api');
               }}
               onClose={() => {
                   setIsQuotaErrorModalOpen(false);
@@ -602,12 +648,26 @@ const App: React.FC = () => {
               }}
             />
             
+            <ConfigErrorModal
+                isOpen={isConfigErrorModalOpen}
+                errorDetails={configErrorDetails}
+                onOpenSettings={() => {
+                    setIsConfigErrorModalOpen(false);
+                    openSettingsPanel('api');
+                }}
+                onClose={() => {
+                    setIsConfigErrorModalOpen(false);
+                    setRetryAction(null);
+                }}
+            />
+
             <SettingsPanel 
                 isOpen={isSettingsOpen}
                 onClose={() => {
                     setIsSettingsOpen(false);
-                    if (retryAction && !isQuotaErrorModalOpen) {
-                        setIsQuotaErrorModalOpen(true);
+                    if (retryAction && !isQuotaErrorModalOpen && !isConfigErrorModalOpen) {
+                         if (failedKeys.length > 0) setIsQuotaErrorModalOpen(true);
+                         else if (configErrorDetails.model) setIsConfigErrorModalOpen(true);
                     }
                 }}
                 settings={settings}
@@ -615,14 +675,28 @@ const App: React.FC = () => {
                 githubUser={githubUser}
                 onLogout={handleLogout}
                 syncStatus={syncStatus}
+                initialTab={settingsInitialTab}
             />
             
             <ImageSearchModal isOpen={isSearchModalOpen} onClose={() => setIsSearchModalOpen(false)} query={searchQuery} onAddImages={handleAddImagesFromSearch} />
             <ImagePickerModal isOpen={isImagePickerModalOpen} onClose={() => setIsImagePickerModalOpen(false)} images={allUploadedImages} onSelect={handleSelectImageFromPicker} />
             <VideoExportModal isOpen={isVideoModalOpen} onClose={() => { setIsVideoModalOpen(false); setIsExporting(false); }} onGenerate={handleGenerateVideo} />
             {videoGenState !== 'idle' && <VideoGenerationOverlay state={videoGenState} progress={videoProgress} onClose={closeVideoOverlay} />}
+            
+            <LogViewerModal isOpen={isLogViewerOpen} onClose={() => setIsLogViewerOpen(false)} />
+            <ErrorDetailModal log={detailedError} onClose={() => setDetailedError(null)} />
+            <ErrorDetailModal log={detailedLog} onClose={() => setDetailedLog(null)} isGeneric={true} />
+
+            <StatusBar onOpenLogViewer={() => setIsLogViewerOpen(true)} />
         </div>
     );
 };
+
+
+const App: React.FC = () => (
+    <LoggerProvider>
+        <AppContent />
+    </LoggerProvider>
+);
 
 export default App;

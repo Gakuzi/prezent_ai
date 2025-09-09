@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { ApiKey } from '../types';
+// FIX: Added AppSettings to the import list from '../types'.
+import { ApiKey, AppSettings } from '../types';
 // FIX: Renamed function to match the export from geminiService.
 import { checkApiKey } from '../services/geminiService';
 import { RefreshIcon, CheckCircleIcon, WarningIcon, XCircleIcon, ClockIcon } from './icons';
 
 interface ApiKeyStatusReportProps {
     initialKeys: ApiKey[];
+    // FIX: Added 'settings' prop to provide model and endpoint for the API check.
+    settings: AppSettings;
 }
 
 const maskKey = (key: string) => {
@@ -26,7 +29,7 @@ const getStatusInfo = (key: ApiKey) => {
     }
 };
 
-const ApiKeyStatusReport: React.FC<ApiKeyStatusReportProps> = ({ initialKeys }) => {
+const ApiKeyStatusReport: React.FC<ApiKeyStatusReportProps> = ({ initialKeys, settings }) => {
     const [keysWithStatus, setKeysWithStatus] = useState<ApiKey[]>(initialKeys);
     const [checkingStatus, setCheckingStatus] = useState<Record<string, boolean>>({});
 
@@ -39,8 +42,8 @@ const ApiKeyStatusReport: React.FC<ApiKeyStatusReportProps> = ({ initialKeys }) 
 
             const checkedKeys = await Promise.all(
                 initialKeys.map(async (key) => {
-                    // FIX: Renamed function to match the export from geminiService.
-                    const status = await checkApiKey(key.value);
+                    // FIX: Pass the required model and endpoint arguments to 'checkApiKey'.
+                    const status = await checkApiKey(key.value, settings.geminiModel, settings.geminiEndpoint);
                     setCheckingStatus(prev => ({...prev, [key.value]: false }));
                     return { ...key, status, lastChecked: Date.now() };
                 })
@@ -49,7 +52,7 @@ const ApiKeyStatusReport: React.FC<ApiKeyStatusReportProps> = ({ initialKeys }) 
         };
 
         checkAllKeys();
-    }, [initialKeys]);
+    }, [initialKeys, settings]);
 
     return (
         <div className="space-y-2 max-h-32 overflow-y-auto pr-2">

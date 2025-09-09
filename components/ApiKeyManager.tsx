@@ -1,12 +1,16 @@
+
+
+
 // FIX: Import 'useEffect' from 'react' to resolve the 'Cannot find name' error.
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { ApiKey } from '../types';
+import { ApiKey, AppSettings } from '../types';
 import { checkApiKey } from '../services/geminiService';
 import { RefreshIcon, PinIcon, PinOffIcon, XCircleIcon, CheckCircleIcon, WarningIcon, MenuIcon, ExternalLinkIcon, ClockIcon } from './icons';
 
 interface ApiKeyManagerProps {
   keys: ApiKey[];
   onKeysChange: (keys: ApiKey[]) => void;
+  settings: AppSettings;
 }
 
 const maskKey = (key: string) => {
@@ -65,14 +69,14 @@ const getStatusInfo = (key: ApiKey) => {
             return { icon: <ClockIcon className="w-5 h-5 text-blue-400" />, text: 'Ограничен', textColor: 'text-blue-300' };
         case 'invalid':
             return { icon: <XCircleIcon className="w-5 h-5 text-red-400" />, text: 'Неверный', textColor: 'text-red-300' };
-        case 'permission_denied':
-            return { icon: <WarningIcon className="w-5 h-5 text-orange-400" />, text: 'API не включен', textColor: 'text-orange-300' };
+        case 'config_error':
+            return { icon: <WarningIcon className="w-5 h-5 text-orange-400" />, text: 'Ошибка конфиг.', textColor: 'text-orange-300' };
         default:
             return { icon: <WarningIcon className="w-5 h-5 text-gray-500" />, text: 'Неизвестно', textColor: 'text-gray-400' };
     }
 };
 
-const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange }) => {
+const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange, settings }) => {
     const [newKeyValue, setNewKeyValue] = useState('');
     const [checkingStatus, setCheckingStatus] = useState<Record<string, boolean>>({});
     const [addKeyError, setAddKeyError] = useState<string | null>(null);
@@ -84,17 +88,26 @@ const ApiKeyManager: React.FC<ApiKeyManagerProps> = ({ keys, onKeysChange }) => 
     const handleCheckKey = useCallback(async (keyToCheck: string) => {
         setCheckingStatus(prev => ({ ...prev, [keyToCheck]: true }));
         try {
-            const status = await checkApiKey(keyToCheck);
+            // FIX: Explicitly type 'status' to prevent TypeScript from widening it to a generic 'string'.
+            const status: ApiKey['status'] = await checkApiKey(keyToCheck, settings.geminiModel, settings.geminiEndpoint);
             const newKeys = keys.map(k => 
                 k.value === keyToCheck ? { ...k, status, lastChecked: Date.now(), resetTime: undefined, lastError: undefined } : k
             );
             onKeysChange(newKeys);
-        } catch (error) {
-            console.error(`Failed to check key ...${keyToCheck.slice(-4)}`, error);
+        } catch (error: any) {
+             if (error.name === 'ConfigError') {
+                alert(`Ошибка конфигурации: ${error.message}. Проверьте модель и эндпоинт в настройках.`);
+                 const newKeys = keys.map(k => 
+                    k.value === keyToCheck ? { ...k, status: 'config_error', lastChecked: Date.now(), lastError: error.message } : k
+                );
+                onKeysChange(newKeys);
+            } else {
+                 console.error(`Failed to check key ...${keyToCheck.slice(-4)}`, error);
+            }
         } finally {
             setCheckingStatus(prev => ({ ...prev, [keyToCheck]: false }));
         }
-    }, [keys, onKeysChange]);
+    }, [keys, onKeysChange, settings.geminiModel, settings.geminiEndpoint]);
     
     const handleAddKey = () => {
         const trimmedKey = newKeyValue.trim();

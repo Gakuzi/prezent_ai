@@ -1,3 +1,4 @@
+
 // FIX: Created placeholder component as it was missing.
 import React from 'react';
 

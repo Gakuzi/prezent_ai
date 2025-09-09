@@ -1,3 +1,6 @@
+
+// FIX: Removed the import for the deprecated 'GoogleGenAIError' type.
+
 export interface UploadedImage {
   id: string;
   file: File;
@@ -67,7 +70,7 @@ export interface VoiceSettings {
 
 export interface ApiKey {
   value: string;
-  status: 'active' | 'exhausted' | 'invalid' | 'unknown' | 'rate_limited' | 'permission_denied';
+  status: 'active' | 'exhausted' | 'invalid' | 'unknown' | 'rate_limited' | 'config_error';
   lastChecked?: number;
   resetTime?: number;
   isPinned?: boolean;
@@ -83,12 +86,39 @@ export interface GithubUser {
   name: string | null;
 }
 
+// Legacy log for specific components
 export interface ApiCallLog {
   timestamp: number;
   key: string;
   status: 'attempting' | 'success' | 'failed' | 'info';
   message: string;
 }
+
+// Details object for rich logging
+export interface LogDetails {
+  maskedKey?: string;
+  model?: string;
+  endpoint?: string;
+  durationMs?: number;
+  httpStatus?: number;
+  apiError?: {
+      status?: string;
+      message?: string;
+  };
+  requestPayload?: any; // The body sent to the API
+  apiResponse?: any;    // The raw JSON response or error object from the API
+}
+
+
+// New global log entry for StatusBar
+export interface LogEntry {
+    id: string;
+    timestamp: number;
+    type: 'info' | 'success' | 'error' | 'warning';
+    message: string;
+    details?: LogDetails;
+}
+
 
 export interface MusicTrack {
     name: string;
@@ -132,6 +162,9 @@ export interface AppSettings {
     apiKeys: ApiKey[];
     voiceSettings: VoiceSettings;
     pexelsApiKey: string | null;
+    githubPat?: string | null;
+    geminiModel: string;
+    geminiEndpoint: string;
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';

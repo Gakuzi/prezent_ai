@@ -365,19 +365,16 @@ const createHtmlPlayer = (slides: Slide[], images: Record<string, string>, voice
 
 export const exportToHtml = async (slides: Slide[], allImages: UploadedImage[], voiceSettings: VoiceSettings): Promise<void> => {
     const imageDataMap: Record<string, string> = {};
-    for (const image of allImages) {
-        // FIX: The property 'imageId' does not exist on 'UploadedImage'.
-        // This logic has been corrected to process only images that are actually used in slides,
-        // which appears to be the original intent.
-        if (slides.some(slide => slide.imageId === image.id)) {
-            imageDataMap[image.id] = await getCorrectedImage(image);
-        }
+    const usedImageIds = new Set(slides.map(s => s.imageId).filter(Boolean));
+    const imagesToProcess = allImages.filter(img => usedImageIds.has(img.id));
+    
+    for (const image of imagesToProcess) {
+        imageDataMap[image.id] = await getCorrectedImage(image);
     }
     
-    // Create a simplified voice settings object for export to avoid including AI narration feature
     const exportedVoiceSettings: VoiceSettings = {
         ...voiceSettings,
-        aiEnhancedNarration: false // This feature is not available in the exported file
+        aiEnhancedNarration: false 
     };
     
     const htmlContent = createHtmlPlayer(slides, imageDataMap, exportedVoiceSettings);

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Slide, UploadedImage, ExportFormat, MusicTrack, VoiceSettings, ApiCallLog } from '../types';
+import { Slide, UploadedImage, ExportFormat, MusicTrack, VoiceSettings, AppSettings } from '../types';
 import * as gemini from '../services/geminiService';
 import ExportMenu from './ExportMenu';
 import MusicMenu from './MusicMenu';
@@ -23,10 +23,10 @@ interface PresentationViewerProps {
   voiceSettings: VoiceSettings;
   onVoiceSettingsChange: (settings: VoiceSettings) => void;
   musicSuggestions: string[];
-  onApiLog: (log: Omit<ApiCallLog, 'timestamp'>) => void;
+  settings: AppSettings;
 }
 
-const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images, onExport, isExporting, onRestart, onEditScript, voiceSettings, onVoiceSettingsChange, musicSuggestions, onApiLog }) => {
+const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images, onExport, isExporting, onRestart, onEditScript, voiceSettings, onVoiceSettingsChange, musicSuggestions, settings }) => {
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [previousSlideIndex, setPreviousSlideIndex] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -56,7 +56,7 @@ const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images,
     if (voiceSettings.aiEnhancedNarration) {
         setIsPreparingSpeech(true);
         try {
-            const response = await gemini.generateSsmlScript(textToSpeak, onApiLog);
+            const response = await gemini.generateSsmlScript(textToSpeak, settings);
             textToSpeak = response.text;
         } catch (error) {
             console.error("Failed to generate SSML script, falling back to plain text:", error);
@@ -95,7 +95,7 @@ const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images,
     };
     utteranceRef.current = utterance;
     speechSynthesis.speak(utterance);
-  }, [voiceSettings, isPlaying, onApiLog, slides.length, currentSlideIndex]);
+  }, [voiceSettings, isPlaying, slides.length, currentSlideIndex, settings]);
 
   const handleSetCurrentSlide = (index: number) => {
       if (index === currentSlideIndex) return;
@@ -267,7 +267,7 @@ const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images,
                 </div>
                  <div className="relative">
                     <button onClick={() => setIsVoiceMenuOpen(true)} className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-white bg-gray-700/50 rounded-lg hover:bg-gray-700 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg> Голос</button>
-                    <VoiceSettingsMenu isOpen={isVoiceMenuOpen} onClose={() => setIsVoiceMenuOpen(false)} voiceSettings={voiceSettings.voices[currentSlide.speaker] || voiceSettings.voices[0]} onVoiceSettingsChange={() => { /* Implement if single voice editing is needed here */ }} />
+                    <VoiceSettingsMenu isOpen={isVoiceMenuOpen} onClose={() => setIsVoiceMenuOpen(false)} voiceSettings={voiceSettings.voices[currentSlide.speaker] || voiceSettings.voices[0]} onVoiceSettingsChange={() => {}} />
                 </div>
                 <div className="flex items-center gap-2 pl-2 border-l border-gray-700">
                     <label htmlFor="podcast-toggle" className="text-sm font-semibold text-white cursor-pointer">Режим подкаста</label>

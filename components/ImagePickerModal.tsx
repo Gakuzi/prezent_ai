@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { UploadedImage } from '../types';
 import { CloseIcon, ImageIcon } from './icons';
@@ -16,7 +17,7 @@ const ImagePickerModal: React.FC<ImagePickerModalProps> = ({ isOpen, onClose, im
   const aiImages = images.filter(img => img.source === 'ai');
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed top-0 left-0 right-0 bottom-[50px] bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="w-full h-full max-w-4xl bg-gray-800 rounded-2xl shadow-2xl border border-gray-700 flex flex-col" onClick={e => e.stopPropagation()}>
         <header className="p-4 border-b border-gray-700 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3">

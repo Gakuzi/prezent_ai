@@ -1,4 +1,5 @@
 
+
 import React from 'react';
 import { ApiKey } from '../types';
 import { WarningIcon, RefreshIcon, SettingsIcon, ClockIcon, XCircleIcon, CheckCircleIcon, CloseIcon } from './icons';
@@ -40,8 +41,6 @@ const getStatusInfo = (key: ApiKey) => {
             return { icon: <ClockIcon className="w-5 h-5 text-blue-400" />, text: 'Частый запрос', textColor: 'text-blue-300' };
         case 'invalid':
             return { icon: <XCircleIcon className="w-5 h-5 text-red-400" />, text: 'Неверный', textColor: 'text-red-300' };
-        case 'permission_denied':
-            return { icon: <WarningIcon className="w-5 h-5 text-orange-400" />, text: 'API не включен', textColor: 'text-orange-300' };
         default:
             return { icon: <WarningIcon className="w-5 h-5 text-gray-500" />, text: 'Неизвестно', textColor: 'text-gray-400' };
     }
@@ -61,14 +60,21 @@ const getSmartSummary = (keys: ApiKey[]): { title: string, message: string } => 
     if (allKeysOnCooldown) {
         return {
             title: "Все ключи исчерпаны",
-            message: "Все ключи исчерпаны, попробуйте завтра."
+            message: "Все ключи временно недоступны из-за превышения лимитов. Попробуйте повторить запрос позже."
         };
     }
 
-    if (keys.some(k => k.status === 'permission_denied')) {
+    if (keys.some(k => k.status === 'invalid' && k.lastError?.includes('API key not valid'))) {
+         return {
+            title: "Неверный API ключ",
+            message: "Один или несколько из ваших ключей недействительны. Пожалуйста, проверьте их в настройках."
+        }
+    }
+    
+    if (keys.some(k => k.status === 'invalid' && k.lastError?.includes('permission denied'))) {
         return {
             title: "API не активирован",
-            message: "Один или несколько ключей не могут быть использованы, так как необходимый сервис не включен в их проекте Google Cloud. Откройте настройки и следуйте инструкции."
+            message: "Для одного из ключей не включен 'Generative Language API' в Google Cloud. Следуйте инструкции в настройках, чтобы активировать его."
         }
     }
     
@@ -104,10 +110,17 @@ const QuotaErrorModal: React.FC<QuotaErrorModalProps> = ({ isOpen, failedKeys, o
                                 const countdown = key.resetTime ? formatTimeLeft(key.resetTime) : '';
 
                                 return (
-                                     <div key={index} className="flex items-center gap-3 text-xs p-2 bg-gray-800/50 rounded-md">
-                                        {statusInfo.icon}
-                                        <span className="font-mono text-gray-400">Ключ {maskKey(key.value)}</span>
-                                        <span className={`font-semibold ${statusInfo.textColor}`}>{statusInfo.text} {countdown}</span>
+                                     <div key={index} className="p-2 bg-gray-800/50 rounded-md">
+                                        <div className="flex items-center gap-3 text-xs">
+                                            {statusInfo.icon}
+                                            <span className="font-mono text-gray-400">Ключ {maskKey(key.value)}</span>
+                                            <span className={`font-semibold ${statusInfo.textColor}`}>{statusInfo.text} {countdown}</span>
+                                        </div>
+                                        {key.lastError && (
+                                            <p className="text-xs text-gray-500 mt-1 pl-8 truncate" title={key.lastError}>
+                                                Причина: {key.lastError}
+                                            </p>
+                                        )}
                                      </div>
                                 );
                             })}

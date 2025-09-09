@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Slide, UploadedImage, ExportFormat, MusicTrack, VoiceSettings, ApiCallLog } from '../types';
-import * as gemini from '../services/geminiService';
-import ExportMenu from './ExportMenu';
-import MusicMenu from './MusicMenu';
-import VoiceSettingsMenu from './VoiceSettingsMenu';
-import { ChevronLeftIcon, ChevronRightIcon, PlayIcon, PauseIcon, SpeakerIcon, FullscreenIcon, FullscreenExitIcon, EditIcon, RefreshIcon } from './icons';
+// FIX: Added AppSettings to import list to be used in props.
+import { Slide, UploadedImage, ExportFormat, MusicTrack, VoiceSettings, AppSettings } from './types';
+import * as gemini from './services/geminiService';
+import ExportMenu from './components/ExportMenu';
+import MusicMenu from './components/MusicMenu';
+import VoiceSettingsMenu from './components/VoiceSettingsMenu';
+import { ChevronLeftIcon, ChevronRightIcon, PlayIcon, PauseIcon, SpeakerIcon, FullscreenIcon, FullscreenExitIcon, EditIcon, RefreshIcon } from './components/icons';
 
 const allAvailableMusic: MusicTrack[] = [
     { name: "Cinematic Ambient", url: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp3", moods: ["cinematic", "ambient", "reflective"] },
@@ -23,10 +24,11 @@ interface PresentationViewerProps {
   voiceSettings: VoiceSettings;
   onVoiceSettingsChange: (settings: VoiceSettings) => void;
   musicSuggestions: string[];
-  onApiLog: (log: Omit<ApiCallLog, 'timestamp'>) => void;
+  // FIX: Added 'settings' prop to be passed to geminiService functions.
+  settings: AppSettings;
 }
 
-const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images, onExport, isExporting, onRestart, onEditScript, voiceSettings, onVoiceSettingsChange, musicSuggestions, onApiLog }) => {
+const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images, onExport, isExporting, onRestart, onEditScript, voiceSettings, onVoiceSettingsChange, musicSuggestions, settings }) => {
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [previousSlideIndex, setPreviousSlideIndex] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -56,7 +58,8 @@ const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images,
     if (voiceSettings.aiEnhancedNarration) {
         setIsPreparingSpeech(true);
         try {
-            const response = await gemini.generateSsmlScript(textToSpeak, onApiLog);
+            // FIX: Pass the required 'settings' argument to 'generateSsmlScript'.
+            const response = await gemini.generateSsmlScript(textToSpeak, settings);
             textToSpeak = response.text;
         } catch (error) {
             console.error("Failed to generate SSML script, falling back to plain text:", error);
@@ -94,7 +97,8 @@ const PresentationViewer: React.FC<PresentationViewerProps> = ({ slides, images,
     };
     utteranceRef.current = utterance;
     speechSynthesis.speak(utterance);
-  }, [voiceSettings, isPlaying, onApiLog, slides.length, currentSlideIndex]);
+    // FIX: Add 'settings' to the dependency array of useCallback.
+  }, [voiceSettings, isPlaying, slides.length, currentSlideIndex, settings]);
 
   const handleSetCurrentSlide = (index: number) => {
       if (index === currentSlideIndex) return;
